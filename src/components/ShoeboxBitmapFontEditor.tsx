@@ -2304,7 +2304,7 @@ export default function ShoeboxBitmapFontEditor() {
             <section
               style={{
                 ...panelChrome,
-                ...(!dirty ? { marginBottom: 0 } : {}),
+                ...(hasXml ? { marginBottom: 0 } : !dirty ? { marginBottom: 0 } : {}),
               }}
               aria-labelledby="glyphs-kerning-heading"
             >
@@ -2394,7 +2394,10 @@ export default function ShoeboxBitmapFontEditor() {
 
             {/* Save/export only when serialized XML differs from last load or download baseline. */}
             {hasXml && (
-              <section style={{ ...panelChrome, marginBottom: 0 }} aria-labelledby="save-export-heading">
+              <section
+                style={{ ...panelChrome, marginTop: 16, marginBottom: 0 }}
+                aria-labelledby="save-export-heading"
+              >
                 <h2 id="save-export-heading" style={sectionTitle}>
                   Save &amp; export
                   {dirty && (
