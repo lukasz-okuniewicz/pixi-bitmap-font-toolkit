@@ -41,6 +41,7 @@ import {
 } from '@/lib/bitmapFont/bitmapFontSessionDb'
 import { initialModelHistoryState, modelHistoryReducer } from '@/lib/bitmapFont/modelHistoryReducer'
 import { rasterizeFontToModel } from '@/lib/bitmapFont/rasterizeFontToModel'
+import { withBasePath } from '@/lib/withBasePath'
 import { ScrubNumberInput } from '@/components/ScrubNumberInput'
 import { ShoeboxHelpSection } from '@/components/ShoeboxHelpSection'
 import { WithTooltip } from '@/components/WithTooltip'
@@ -118,8 +119,8 @@ const DARK_UI_STORAGE_KEY = 'pixi-bitmap-font-toolkit-dark-ui'
 const DARK_UI_STORAGE_KEY_LEGACY = 'pixi-js-shoebox-dark-ui'
 
 /** Bundled BMFont served from `public/` (see `public/bitmapFont.xml`). */
-const EXAMPLE_FONT_XML_PATH = '/bitmapFont.xml'
-const EXAMPLE_FONT_PNG_PATH = '/bitmapFont.png'
+const EXAMPLE_FONT_XML_PATH = withBasePath('/bitmapFont.xml')
+const EXAMPLE_FONT_PNG_PATH = withBasePath('/bitmapFont.png')
 
 const SESSION_DISMISS_STORAGE_KEY = 'pixi-bitmap-font-session-dismiss-savedAt'
 
