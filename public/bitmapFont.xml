@@ -1,0 +1,24 @@
+<font>
+	<info face="StyledCharset" size="179" />
+	<common lineHeight="179" scaleW="1536" scaleH="1024" pages="1" />
+	<pages>
+		<page id="0" file="bitmapFont.png" />
+	</pages>
+	<chars count="13">
+		<char id="8364" x="37" y="400" width="130" height="148" xoffset="0" yoffset="15" xadvance="130" />
+		<char id="49" x="222" y="401" width="64" height="144" xoffset="0" yoffset="15" xadvance="64" />
+		<char id="50" x="336" y="400" width="99" height="145" xoffset="0" yoffset="15" xadvance="99" />
+		<char id="51" x="454" y="400" width="100" height="147" xoffset="0" yoffset="15" xadvance="100" />
+		<char id="52" x="572" y="401" width="109" height="144" xoffset="0" yoffset="15" xadvance="109" />
+		<char id="53" x="696" y="401" width="101" height="146" xoffset="0" yoffset="15" xadvance="101" />
+		<char id="54" x="818" y="401" width="103" height="146" xoffset="0" yoffset="15" xadvance="103" />
+		<char id="55" x="940" y="401" width="92" height="144" xoffset="0" yoffset="15" xadvance="92" />
+		<char id="56" x="1054" y="399" width="108" height="149" xoffset="0" yoffset="15" xadvance="108" />
+		<char id="57" x="1184" y="400" width="107" height="146" xoffset="0" yoffset="15" xadvance="107" />
+		<char id="48" x="1302" y="400" width="106" height="147" xoffset="0" yoffset="15" xadvance="106" />
+		<char id="46" x="1450" y="511" width="31" height="30" xoffset="0" yoffset="133" xadvance="31" />
+		<char id="44" x="1410" y="510" width="34" height="47" xoffset="0" yoffset="133" xadvance="34" />
+	</chars>
+	<kernings count="0">
+	</kernings>
+</font>

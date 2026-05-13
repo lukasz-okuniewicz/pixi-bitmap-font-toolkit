@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<font>
+    <info face="FixtureSpaces" size="14" />
+    <common lineHeight="16" scaleW="128" scaleH="128" pages="1" />
+    <pages>
+        <page id="0" file="atlas.png" />
+    </pages>
+    <chars count="0"></chars>
+    <kernings count="0"></kernings>
+</font>

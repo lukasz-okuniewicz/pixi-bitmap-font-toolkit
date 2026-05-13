@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<font>
+  <info face="FixtureMismatch" size="10" />
+  <common lineHeight="12" scaleW="32" scaleH="32" pages="2" />
+  <pages>
+    <page id="0" file="p0.png" />
+  </pages>
+  <chars count="0"></chars>
+  <kernings count="0"></kernings>
+</font>

@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<font>
+	<info face="FixtureTabs" size="12" />
+	<common lineHeight="14" scaleW="64" scaleH="64" pages="1" />
+	<pages>
+		<page id="0" file="a.png" />
+	</pages>
+	<chars count="1">
+		<char id="65" x="0" y="0" width="8" height="8" xoffset="0" yoffset="0" xadvance="8" />
+	</chars>
+	<kernings count="0"></kernings>
+</font>
