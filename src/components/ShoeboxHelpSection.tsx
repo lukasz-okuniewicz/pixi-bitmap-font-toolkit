@@ -64,8 +64,8 @@ export function ShoeboxHelpSection({ darkTheme, text, textMuted, inputBorder, pa
           <strong>Styled charset PNG</strong> — For Photoshop (or similar) workflows: export one image whose glyphs appear in reading order (left to right per
           row, rows top to bottom). Paste the same character sequence into <strong>Charset</strong>, upload the image, then <strong>Build BMFont from styled image</strong>.
           The tool finds glyph boxes from alpha and writes <code style={codeStyle}>&lt;char&gt;</code> entries. Glows or tight pairs can merge regions; fix
-          rectangles in the texture editor afterward. <strong>Space</strong> (U+0020) is never sliced from ink: it uses a 1×1 atlas anchor and the{' '}
-          <strong>space xadvance</strong> value you set.
+          rectangles in the texture editor afterward. If your charset does not include <strong>space</strong> (U+0020), one is appended automatically so the XML
+          always has a space glyph. <strong>Space</strong> is never sliced from ink: it uses a 1×1 atlas anchor and the <strong>space xadvance</strong> value you set.
         </li>
         <li style={{ marginBottom: 8 }}>
           <strong>Raster from font file</strong> — Pick a <code style={codeStyle}>.ttf</code> or <code style={codeStyle}>.otf</code> the browser can load via{' '}

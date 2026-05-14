@@ -402,7 +402,7 @@ export default function ShoeboxBitmapFontEditor() {
     const next = url.pathname + url.search + url.hash
     window.history.replaceState(window.history.state, '', next)
   }, [])
-  const [stripCharset, setStripCharset] = useState('$€£1234567890,.')
+  const [stripCharset, setStripCharset] = useState('$€£1234567890,. ')
   const [stripFace, setStripFace] = useState('StyledCharset')
   const [stripAlpha, setStripAlpha] = useState(8)
   const [stripMinGap, setStripMinGap] = useState(2)
@@ -847,10 +847,13 @@ export default function ShoeboxBitmapFontEditor() {
     setLoadError(null)
     setGeneratorNotes([])
     try {
+      const charsetForBuild = stripCharset.includes('\u0020')
+        ? stripCharset
+        : `${stripCharset}\u0020`
       const imageData = await decodeImageFileToImageData(f)
       const pageFile = basename(f.name)
       const baseName = pageFile.replace(/\.[^.]+$/i, '') || 'font'
-      const r = charsetStripToModel(imageData, stripCharset, {
+      const r = charsetStripToModel(imageData, charsetForBuild, {
         alphaThreshold: Math.max(0, Math.min(255, stripAlpha)),
         minGapPx: Math.max(1, stripMinGap),
         minRowGapPx: Math.max(1, stripMinRowGap),
@@ -878,6 +881,9 @@ export default function ShoeboxBitmapFontEditor() {
       setExportFileName(`${baseName}.xml`)
       setGeneratorNotes(r.warnings)
       setSelectedCharId(null)
+      if (charsetForBuild !== stripCharset) {
+        setStripCharset(charsetForBuild)
+      }
     } catch (err) {
       setLoadError(err instanceof Error ? err.message : String(err))
     } finally {
@@ -1680,7 +1686,7 @@ export default function ShoeboxBitmapFontEditor() {
                 Detect comma vs period from ink (swap U+002C / U+002E when shape disagrees with charset)
               </label>
               <label style={{ display: 'flex', flexDirection: 'column', gap: 6, fontSize: 12, color: textMuted, marginBottom: 10 }}>
-                Charset (order matches image, code points; include <code style={{ fontFamily: 'monospace' }}> </code> for space if needed)
+                Charset (order matches image, code points; U+0020 is appended when missing so space uses space xadvance)
                 <textarea
                   value={stripCharset}
                   onChange={(e) => setStripCharset(e.target.value)}
