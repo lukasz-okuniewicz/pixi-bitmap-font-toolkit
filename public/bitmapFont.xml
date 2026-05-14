@@ -18,7 +18,7 @@
 		<char id="48" x="1302" y="400" width="106" height="147" xoffset="0" yoffset="15" xadvance="106" />
 		<char id="46" x="1450" y="511" width="31" height="30" xoffset="0" yoffset="133" xadvance="31" />
 		<char id="44" x="1410" y="510" width="34" height="47" xoffset="0" yoffset="133" xadvance="34" />
-		<char id="36" x="0" y="0" width="34" height="34" xoffset="0" yoffset="0" xadvance="4" />
+		<char id="32" x="0" y="0" width="34" height="34" xoffset="0" yoffset="0" xadvance="4" />
 	</chars>
 	<kernings count="0">
 	</kernings>
