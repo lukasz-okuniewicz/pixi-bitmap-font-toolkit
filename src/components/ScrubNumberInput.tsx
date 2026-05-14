@@ -1,6 +1,6 @@
 'use client'
 
-import React, { useCallback, useRef } from 'react'
+import React, { useCallback, useLayoutEffect, useRef } from 'react'
 
 export type ScrubNumberInputProps = Omit<React.InputHTMLAttributes<HTMLInputElement>, 'value' | 'onChange' | 'type'> & {
   value: number
@@ -11,6 +11,15 @@ export type ScrubNumberInputProps = Omit<React.InputHTMLAttributes<HTMLInputElem
   deadZonePx?: number
   min?: number
   max?: number
+  /**
+   * When a finite number and different from `value`, shows a small control to restore that number
+   * (typically from the last import / generator snapshot). `null` / `undefined` = no restore UI.
+   */
+  baselineValue?: number | null
+  /** Optional colors for the restore control (matches surrounding inputs). */
+  resetControlBg?: string
+  resetControlBorder?: string
+  resetControlColor?: string
 }
 
 function clamp(n: number, min?: number, max?: number): number {
@@ -35,10 +44,17 @@ export function ScrubNumberInput({
   className,
   onPointerDown: onPointerDownProp,
   disabled,
+  baselineValue,
+  resetControlBg,
+  resetControlBorder,
+  resetControlColor,
   ...rest
 }: ScrubNumberInputProps) {
   const valueRef = useRef(value)
-  valueRef.current = value
+
+  useLayoutEffect(() => {
+    valueRef.current = value
+  }, [value])
 
   const handlePointerDown = useCallback(
     (e: React.PointerEvent<HTMLInputElement>) => {
@@ -95,7 +111,36 @@ export function ScrubNumberInput({
   const base = Number.isFinite(value) ? value : 0
   const mergedClass = [className, 'shoebox-scrub-number'].filter(Boolean).join(' ')
 
-  return (
+  const styleObj = (style ?? {}) as React.CSSProperties
+  const { width: widthFromStyle, ...inputOnlyStyle } = styleObj
+
+  const canRestore =
+    typeof baselineValue === 'number' &&
+    Number.isFinite(baselineValue) &&
+    !disabled &&
+    base !== baselineValue
+
+  const restoreTitle = `Restore value from last import or generator (${baselineValue})`
+
+  if (!canRestore) {
+    return (
+      <input
+        type="number"
+        className={mergedClass}
+        disabled={disabled}
+        value={base}
+        onChange={(ev) => {
+          const n = Number(ev.target.value)
+          onValueChange(Number.isFinite(n) ? n : 0)
+        }}
+        onPointerDown={handlePointerDown}
+        style={{ cursor: 'ew-resize', ...styleObj }}
+        {...rest}
+      />
+    )
+  }
+
+  const inputEl = (
     <input
       type="number"
       className={mergedClass}
@@ -106,8 +151,52 @@ export function ScrubNumberInput({
         onValueChange(Number.isFinite(n) ? n : 0)
       }}
       onPointerDown={handlePointerDown}
-      style={{ cursor: 'ew-resize', ...style }}
+      style={{
+        cursor: 'ew-resize',
+        ...inputOnlyStyle,
+        flex: 1,
+        minWidth: 0,
+        width: 'auto',
+      }}
       {...rest}
     />
+  )
+
+  return (
+    <span
+      style={{
+        display: 'inline-flex',
+        alignItems: 'stretch',
+        width: widthFromStyle ?? '100%',
+        gap: 2,
+        verticalAlign: 'middle',
+      }}
+    >
+      {inputEl}
+      <button
+        type="button"
+        aria-label={restoreTitle}
+        title={restoreTitle}
+        onClick={(e) => {
+          e.preventDefault()
+          e.stopPropagation()
+          onValueChange(clamp(baselineValue, min, max))
+        }}
+        style={{
+          flex: '0 0 auto',
+          minWidth: 18,
+          padding: '0 2px',
+          fontSize: 12,
+          lineHeight: 1,
+          cursor: 'pointer',
+          borderRadius: 4,
+          border: `1px solid ${resetControlBorder ?? 'var(--shoebox-border, #d1d5db)'}`,
+          background: resetControlBg ?? 'var(--shoebox-input-bg, #fff)',
+          color: resetControlColor ?? 'var(--shoebox-text, #111827)',
+        }}
+      >
+        ↺
+      </button>
+    </span>
   )
 }

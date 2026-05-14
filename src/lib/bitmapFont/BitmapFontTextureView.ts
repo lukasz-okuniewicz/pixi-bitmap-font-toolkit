@@ -10,7 +10,11 @@ export type TextureViewOptions = {
   /** When false, hide glyph rectangles */
   showOutlines?: boolean
   onRectDragEnd?: (charId: number, rect: Pick<BitmapFontChar, 'x' | 'y' | 'width' | 'height'>) => void
+  /** Fired on mouseup after a glyph mousedown with pointer movement ≤ slop (client pixels). Does not fire with onRectDragEnd for the same gesture. */
+  onGlyphClick?: (charId: number, clientX: number, clientY: number) => void
 }
+
+const GLYPH_CLICK_SLOP_PX = 5
 
 /**
  * Canvas: atlas image + glyph boxes; wheel zoom, drag pan; optional drag to move glyph rect.
@@ -68,13 +72,24 @@ export class BitmapFontTextureView {
     this.canvas.addEventListener('wheel', this.onWheel, { passive: false })
     this.canvas.addEventListener('mousedown', this.onDown)
     window.addEventListener('mousemove', this.onMove)
-    window.addEventListener('mouseup', this.onUp)
+    window.addEventListener('mouseup', this.onUp as (e: Event) => void)
   }
 
   setOptions(partial: Partial<TextureViewOptions>) {
     this.opts = { ...this.opts, ...partial }
     if (partial.imageUrl != null) this.loadImage(partial.imageUrl)
     else this.redraw()
+  }
+
+  /** Clear pan/zoom gesture state and fit the atlas centered in the viewport (same as initial load). */
+  resetPreviewView(): void {
+    this.dragging = null
+    this.dragPos = null
+    this.panning = null
+    this.wrap.style.cursor = 'grab'
+    this.userAdjustedTextureTransform = false
+    this.applyTextureAutoFit()
+    this.redraw()
   }
 
   resize(width: number, height: number) {
@@ -108,7 +123,7 @@ export class BitmapFontTextureView {
     this.canvas.removeEventListener('wheel', this.onWheel)
     this.canvas.removeEventListener('mousedown', this.onDown)
     window.removeEventListener('mousemove', this.onMove)
-    window.removeEventListener('mouseup', this.onUp)
+    window.removeEventListener('mouseup', this.onUp as (e: Event) => void)
     this.wrap.remove()
     this.img = null
     this.userAdjustedTextureTransform = false
@@ -176,7 +191,7 @@ export class BitmapFontTextureView {
     const { x: lx, y: ly } = this.clientToLogical(e.clientX, e.clientY)
     const { ax, ay } = this.logicalToAtlas(lx, ly)
 
-    if (e.button === 0 && this.opts.onRectDragEnd) {
+    if (e.button === 0 && (this.opts.onRectDragEnd || this.opts.onGlyphClick)) {
       const hit = this.hitTest(ax, ay)
       if (hit != null) {
         const ch = this.opts.chars.find((c) => c.id === hit)
@@ -214,17 +229,23 @@ export class BitmapFontTextureView {
     }
   }
 
-  private onUp = () => {
+  private onUp = (e: Event) => {
+    const me = e as MouseEvent
     const dragging = this.dragging
-    if (dragging && this.dragPos && this.opts.onRectDragEnd) {
-      const ch = this.opts.chars.find((c) => c.id === dragging.charId)
-      if (ch) {
-        this.opts.onRectDragEnd(dragging.charId, {
-          x: this.dragPos.x,
-          y: this.dragPos.y,
-          width: ch.width,
-          height: ch.height,
-        })
+    if (dragging) {
+      const dist = Math.hypot(me.clientX - dragging.startMx, me.clientY - dragging.startMy)
+      if (dist <= GLYPH_CLICK_SLOP_PX && this.opts.onGlyphClick) {
+        this.opts.onGlyphClick(dragging.charId, me.clientX, me.clientY)
+      } else if (dist > GLYPH_CLICK_SLOP_PX && this.dragPos && this.opts.onRectDragEnd) {
+        const ch = this.opts.chars.find((c) => c.id === dragging.charId)
+        if (ch) {
+          this.opts.onRectDragEnd(dragging.charId, {
+            x: this.dragPos.x,
+            y: this.dragPos.y,
+            width: ch.width,
+            height: ch.height,
+          })
+        }
       }
     }
     this.dragging = null

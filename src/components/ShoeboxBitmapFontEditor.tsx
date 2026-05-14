@@ -1,6 +1,7 @@
 'use client'
 
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState, startTransition } from 'react'
+import { createPortal } from 'react-dom'
 import { useSearchParams } from 'next/navigation'
 
 import {
@@ -22,7 +23,12 @@ import {
   zipBitmapFontFiles,
 } from '@/lib/bitmapFont'
 import { isBitmapFontBinaryMagic, parseBitmapFontBinary, serializeBitmapFontBinary } from '@/lib/bitmapFont/BitmapFontBinary'
-import { BitmapFontCharTable, type BitmapFontBulkPreset, type BitmapFontCharTableHandle } from '@/lib/bitmapFont/BitmapFontCharTable'
+import {
+  BitmapFontCharTable,
+  glyphLabelForCode,
+  type BitmapFontBulkPreset,
+  type BitmapFontCharTableHandle,
+} from '@/lib/bitmapFont/BitmapFontCharTable'
 import { BitmapFontKerningEditor, type BitmapFontKerningEditorHandle } from '@/lib/bitmapFont/BitmapFontKerningEditor'
 import { BitmapFontPreview } from '@/lib/bitmapFont/BitmapFontPreview'
 import { BitmapFontTextureView } from '@/lib/bitmapFont/BitmapFontTextureView'
@@ -44,7 +50,22 @@ import { rasterizeFontToModel } from '@/lib/bitmapFont/rasterizeFontToModel'
 import { withBasePath } from '@/lib/withBasePath'
 import { ScrubNumberInput } from '@/components/ScrubNumberInput'
 import { ShoeboxHelpSection } from '@/components/ShoeboxHelpSection'
-import { WithTooltip } from '@/components/WithTooltip'
+import { WithTooltip, SHOEBOX_GLYPH_POPOVER_Z_INDEX, SHOEBOX_TOOLTIP_ABOVE_POPOVER_Z_INDEX } from '@/components/WithTooltip'
+
+const GLYPH_POPOVER_TIP_PORTAL_Z = SHOEBOX_TOOLTIP_ABOVE_POPOVER_Z_INDEX
+
+const GLYPH_POPOVER_FIELD_TIPS = {
+  atlasX: 'Left position of glyph rectangle in the texture atlas (pixels).',
+  atlasY: 'Top position of glyph rectangle in the texture atlas (pixels).',
+  width: 'Glyph rectangle width in the texture atlas (pixels).',
+  height: 'Glyph rectangle height in the texture atlas (pixels).',
+  xoffset: 'Horizontal drawing offset from pen position (pixels).',
+  yoffset: 'Vertical drawing offset from baseline or pen position (pixels).',
+  xadvance:
+    'Per-glyph horizontal advance added on top of Global advance X; the BMFont file stores global + this as each char’s xadvance (pixels).',
+  showAtlasRect:
+    'Show Atlas X/Y, width, and height in this dialog and in the character table. You can still drag glyph rectangles on the texture preview when this is off.',
+} as const
 
 function basename(p: string): string {
   const i = Math.max(p.lastIndexOf('/'), p.lastIndexOf('\\'))
@@ -161,6 +182,8 @@ const EXAMPLE_FONT_PNG_PATH = withBasePath('/bitmapFont.png')
 
 const SESSION_DISMISS_STORAGE_KEY = 'pixi-bitmap-font-session-dismiss-savedAt'
 
+const SHOW_ATLAS_RECT_COLS_STORAGE_KEY = 'pixi-bitmap-font-toolkit-show-atlas-rect-cols'
+
 type ImportSourceTab = 'bmfont' | 'styledStrip' | 'rasterFont'
 
 function parseImportTabParam(v: string | null): ImportSourceTab | null {
@@ -182,16 +205,46 @@ function readDarkUiFromStorage(): boolean | null {
   }
 }
 
+function readShowAtlasRectColsFromStorage(): boolean | null {
+  if (typeof window === 'undefined') return null
+  try {
+    const raw = localStorage.getItem(SHOW_ATLAS_RECT_COLS_STORAGE_KEY)
+    if (raw === null) return null
+    if (raw === '1' || raw === 'true') return true
+    if (raw === '0' || raw === 'false') return false
+    return null
+  } catch {
+    return null
+  }
+}
+
 export default function ShoeboxBitmapFontEditor() {
   const searchParams = useSearchParams()
 
   /** Default dark; first paint matches SSR; then we apply localStorage if set. */
   const [darkTheme, setDarkThemeState] = useState(true)
+  const [showAtlasRectColumns, setShowAtlasRectColumnsState] = useState(false)
 
   useEffect(() => {
     const v = readDarkUiFromStorage()
     if (v !== null) {
       startTransition(() => setDarkThemeState(v))
+    }
+  }, [])
+
+  useEffect(() => {
+    const v = readShowAtlasRectColsFromStorage()
+    if (v !== null) {
+      startTransition(() => setShowAtlasRectColumnsState(v))
+    }
+  }, [])
+
+  const setShowAtlasRectColumns = useCallback((next: boolean) => {
+    setShowAtlasRectColumnsState(next)
+    try {
+      localStorage.setItem(SHOW_ATLAS_RECT_COLS_STORAGE_KEY, next ? '1' : '0')
+    } catch {
+      /* ignore quota / private mode */
     }
   }, [])
 
@@ -280,18 +333,27 @@ export default function ShoeboxBitmapFontEditor() {
   const model = histState.model
   const modelRef = useRef(model)
 
-  const setModel = useCallback(
-    (update: React.SetStateAction<BitmapFontModel>, recordHistory = true) => {
-      histDispatch({ type: 'set', update, recordHistory })
-    },
-    []
-  )
+  /** Snapshot updated on every full model replace (`setModel(m, false)`) for per-field “restore loaded” controls. */
+  const [baselineModel, setBaselineModel] = useState(() => structuredClone(initialModelHistoryState().model))
+
+  const setModel = useCallback((update: React.SetStateAction<BitmapFontModel>, recordHistory = true) => {
+    if (!recordHistory && typeof update !== 'function') {
+      setBaselineModel(structuredClone(update))
+    }
+    histDispatch({ type: 'set', update, recordHistory })
+  }, [])
 
   useLayoutEffect(() => {
     modelRef.current = model
   }, [model])
   const [previewText, setPreviewText] = useState('€ 123.456,90')
   const [selectedCharId, setSelectedCharId] = useState<number | null>(null)
+  const [atlasGlyphPopover, setAtlasGlyphPopover] = useState<{
+    charId: number
+    anchorX: number
+    anchorY: number
+  } | null>(null)
+  const atlasGlyphPopoverRef = useRef<HTMLDivElement>(null)
   const [loadError, setLoadError] = useState<string | null>(null)
   const [lastSavedXml, setLastSavedXml] = useState<string | null>(null)
   const [showBaseline, setShowBaseline] = useState(false)
@@ -301,6 +363,19 @@ export default function ShoeboxBitmapFontEditor() {
   const kernFontInputRef = useRef<HTMLInputElement>(null)
   const charTableRef = useRef<BitmapFontCharTableHandle>(null)
   const kernEditorRef = useRef<BitmapFontKerningEditorHandle>(null)
+
+  const closeAtlasGlyphPopover = useCallback(() => {
+    setAtlasGlyphPopover(null)
+  }, [])
+
+  const onAtlasGlyphClick = useCallback((charId: number, clientX: number, clientY: number) => {
+    setSelectedCharId(charId)
+    setAtlasGlyphPopover({ charId, anchorX: clientX, anchorY: clientY })
+    requestAnimationFrame(() => {
+      charTableRef.current?.scrollToCharId(charId)
+    })
+  }, [])
+
   const [kernFirst, setKernFirst] = useState('')
   const [kernSecond, setKernSecond] = useState('')
   const [exportFileName, setExportFileName] = useState('font.xml')
@@ -378,7 +453,7 @@ export default function ShoeboxBitmapFontEditor() {
 
   useEffect(() => {
     if (!ready || previewTextureUrls.length === 0) {
-      setAtlasPixelMatchesCommon(null)
+      queueMicrotask(() => setAtlasPixelMatchesCommon(null))
       return
     }
     const urls = previewTextureUrls
@@ -481,6 +556,35 @@ export default function ShoeboxBitmapFontEditor() {
     () => model.chars.filter((c) => charAtlasPage(c) === atlasViewPageId),
     [model.chars, atlasViewPageId]
   )
+
+  const atlasGlyphPopoverIndex = useMemo(() => {
+    if (!atlasGlyphPopover) return -1
+    return model.chars.findIndex((c) => c.id === atlasGlyphPopover.charId)
+  }, [atlasGlyphPopover, model.chars])
+
+  const atlasGlyphPopoverPosition = useMemo(() => {
+    if (!atlasGlyphPopover) return null
+    const pad = 12
+    const w = 300
+    const maxH = 420
+    let left = atlasGlyphPopover.anchorX + 10
+    let top = atlasGlyphPopover.anchorY + 10
+    if (typeof window !== 'undefined') {
+      left = Math.min(left, window.innerWidth - w - pad)
+      left = Math.max(pad, left)
+      top = Math.min(top, window.innerHeight - maxH - pad)
+      top = Math.max(pad, top)
+    }
+    return { left, top, width: w }
+  }, [atlasGlyphPopover])
+
+  const atlasGlyphPopoverChar = useMemo(() => {
+    if (atlasGlyphPopoverIndex < 0) return null
+    const ch = model.chars[atlasGlyphPopoverIndex]
+    if (!ch) return null
+    const bk = baselineModel.chars.find((c) => c.id === ch.id)
+    return { ch, bk }
+  }, [atlasGlyphPopoverIndex, model.chars, baselineModel.chars])
 
   useEffect(() => {
     pageAtlasUrlsRef.current = pageAtlasUrls
@@ -904,6 +1008,7 @@ export default function ShoeboxBitmapFontEditor() {
       onRectDragEnd: (charId, rect) => {
         setModel((prev) => patchCharById(prev, charId, rect))
       },
+      onGlyphClick: onAtlasGlyphClick,
     })
     textureRef.current = tv
     const el = textureHostRef.current
@@ -931,8 +1036,30 @@ export default function ShoeboxBitmapFontEditor() {
       scaleW: model.common.scaleW,
       scaleH: model.common.scaleH,
       showOutlines,
+      onGlyphClick: onAtlasGlyphClick,
     })
-  }, [charsOnActivePage, model.common.scaleW, model.common.scaleH, selectedCharId, showOutlines])
+  }, [charsOnActivePage, model.common.scaleW, model.common.scaleH, selectedCharId, showOutlines, onAtlasGlyphClick])
+
+  useEffect(() => {
+    if (!atlasGlyphPopover) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') closeAtlasGlyphPopover()
+    }
+    const onDown = (e: MouseEvent) => {
+      const el = atlasGlyphPopoverRef.current
+      if (el && !el.contains(e.target as Node)) closeAtlasGlyphPopover()
+    }
+    document.addEventListener('keydown', onKey)
+    document.addEventListener('mousedown', onDown, true)
+    return () => {
+      document.removeEventListener('keydown', onKey)
+      document.removeEventListener('mousedown', onDown, true)
+    }
+  }, [atlasGlyphPopover, closeAtlasGlyphPopover])
+
+  useEffect(() => {
+    if (!hasXml) closeAtlasGlyphPopover()
+  }, [hasXml, closeAtlasGlyphPopover])
 
   useEffect(() => {
     if (!hasXml) return
@@ -1980,19 +2107,46 @@ export default function ShoeboxBitmapFontEditor() {
                 <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
                   face
                   <WithTooltip darkTheme={darkTheme} block tip="BMFont face name — Pixi BitmapText uses this as fontName.">
-                    <input
-                      value={model.info.face}
-                      onChange={(e) => setModel((p) => setInfo(p, { face: e.target.value }))}
-                      style={{
-                        padding: 6,
-                        background: inputBg,
-                        color: text,
-                        border: `1px solid ${inputBorder}`,
-                        borderRadius: 4,
-                        width: '100%',
-                        boxSizing: 'border-box',
-                      }}
-                    />
+                    <div style={{ display: 'flex', gap: 6, alignItems: 'stretch', width: '100%' }}>
+                      <input
+                        value={model.info.face}
+                        onChange={(e) => setModel((p) => setInfo(p, { face: e.target.value }))}
+                        style={{
+                          flex: 1,
+                          minWidth: 0,
+                          padding: 6,
+                          background: inputBg,
+                          color: text,
+                          border: `1px solid ${inputBorder}`,
+                          borderRadius: 4,
+                          boxSizing: 'border-box',
+                        }}
+                      />
+                      {model.info.face !== baselineModel.info.face && (
+                        <WithTooltip darkTheme={darkTheme} tip={`Restore face from last import or generator (${baselineModel.info.face})`}>
+                          <button
+                            type="button"
+                            aria-label={`Restore face from last import or generator (${baselineModel.info.face})`}
+                            title={`Restore face from last import or generator (${baselineModel.info.face})`}
+                            onClick={() => setModel((p) => setInfo(p, { face: baselineModel.info.face }))}
+                            style={{
+                              flex: '0 0 auto',
+                              minWidth: 28,
+                              padding: '0 4px',
+                              fontSize: 14,
+                              lineHeight: 1,
+                              cursor: 'pointer',
+                              borderRadius: 4,
+                              border: `1px solid ${inputBorder}`,
+                              background: inputBg,
+                              color: text,
+                            }}
+                          >
+                            ↺
+                          </button>
+                        </WithTooltip>
+                      )}
+                    </div>
                   </WithTooltip>
                 </label>
                 <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
@@ -2001,6 +2155,10 @@ export default function ShoeboxBitmapFontEditor() {
                     <ScrubNumberInput
                       value={model.info.size}
                       onValueChange={(n) => setModel((p) => setInfo(p, { size: n }))}
+                      baselineValue={baselineModel.info.size}
+                      resetControlBg={inputBg}
+                      resetControlBorder={inputBorder}
+                      resetControlColor={text}
                       style={{
                         padding: 6,
                         background: inputBg,
@@ -2019,6 +2177,10 @@ export default function ShoeboxBitmapFontEditor() {
                     <ScrubNumberInput
                       value={model.common.lineHeight}
                       onValueChange={(n) => setModel((p) => setCommon(p, { lineHeight: n }))}
+                      baselineValue={baselineModel.common.lineHeight}
+                      resetControlBg={inputBg}
+                      resetControlBorder={inputBorder}
+                      resetControlColor={text}
                       style={{
                         padding: 6,
                         background: inputBg,
@@ -2037,6 +2199,10 @@ export default function ShoeboxBitmapFontEditor() {
                     <ScrubNumberInput
                       value={model.common.scaleW}
                       onValueChange={(n) => setModel((p) => setCommon(p, { scaleW: n }))}
+                      baselineValue={baselineModel.common.scaleW}
+                      resetControlBg={inputBg}
+                      resetControlBorder={inputBorder}
+                      resetControlColor={text}
                       style={{
                         padding: 6,
                         background: inputBg,
@@ -2055,6 +2221,10 @@ export default function ShoeboxBitmapFontEditor() {
                     <ScrubNumberInput
                       value={model.common.scaleH}
                       onValueChange={(n) => setModel((p) => setCommon(p, { scaleH: n }))}
+                      baselineValue={baselineModel.common.scaleH}
+                      resetControlBg={inputBg}
+                      resetControlBorder={inputBorder}
+                      resetControlColor={text}
                       style={{
                         padding: 6,
                         background: inputBg,
@@ -2070,25 +2240,61 @@ export default function ShoeboxBitmapFontEditor() {
                 <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
                   page file
                   <WithTooltip darkTheme={darkTheme} block tip="Value for &lt;page file=&quot;…&quot;&gt; — should match how your game resolves the atlas file name.">
-                    <input
-                      value={model.pages[0]?.file ?? ''}
-                      onChange={(e) =>
-                        setModel((p) => ({
-                          ...p,
-                          pages: [{ id: 0, file: e.target.value.trim() }],
-                          common: { ...p.common, pages: 1 },
-                        }))
-                      }
-                      style={{
-                        padding: 6,
-                        background: inputBg,
-                        color: text,
-                        border: `1px solid ${inputBorder}`,
-                        borderRadius: 4,
-                        width: '100%',
-                        boxSizing: 'border-box',
-                      }}
-                    />
+                    <div style={{ display: 'flex', gap: 6, alignItems: 'stretch', width: '100%' }}>
+                      <input
+                        value={model.pages[0]?.file ?? ''}
+                        onChange={(e) =>
+                          setModel((p) => ({
+                            ...p,
+                            pages: [{ id: 0, file: e.target.value.trim() }],
+                            common: { ...p.common, pages: 1 },
+                          }))
+                        }
+                        style={{
+                          flex: 1,
+                          minWidth: 0,
+                          padding: 6,
+                          background: inputBg,
+                          color: text,
+                          border: `1px solid ${inputBorder}`,
+                          borderRadius: 4,
+                          boxSizing: 'border-box',
+                        }}
+                      />
+                      {(model.pages[0]?.file ?? '') !== (baselineModel.pages[0]?.file ?? '') && (
+                        <WithTooltip
+                          darkTheme={darkTheme}
+                          tip={`Restore page file from last import or generator (${baselineModel.pages[0]?.file ?? ''})`}
+                        >
+                          <button
+                            type="button"
+                            aria-label={`Restore page file from last import or generator (${baselineModel.pages[0]?.file ?? ''})`}
+                            title={`Restore page file from last import or generator (${baselineModel.pages[0]?.file ?? ''})`}
+                            onClick={() =>
+                              setModel((p) => ({
+                                ...p,
+                                pages: [{ id: 0, file: baselineModel.pages[0]?.file ?? '' }],
+                                common: { ...p.common, pages: 1 },
+                              }))
+                            }
+                            style={{
+                              flex: '0 0 auto',
+                              minWidth: 28,
+                              padding: '0 4px',
+                              fontSize: 14,
+                              lineHeight: 1,
+                              cursor: 'pointer',
+                              borderRadius: 4,
+                              border: `1px solid ${inputBorder}`,
+                              background: inputBg,
+                              color: text,
+                            }}
+                          >
+                            ↺
+                          </button>
+                        </WithTooltip>
+                      )}
+                    </div>
                   </WithTooltip>
                 </label>
               </div>
@@ -2178,7 +2384,19 @@ export default function ShoeboxBitmapFontEditor() {
                 </div>
               )}
             </section>
-            <section style={panelChrome} aria-labelledby="atlas-preview-heading">
+            <section
+              style={{
+                ...panelChrome,
+                ...(!stackPreviews
+                  ? {
+                      position: 'sticky',
+                      top: 8,
+                      zIndex: 5,
+                    }
+                  : {}),
+              }}
+              aria-labelledby="atlas-preview-heading"
+            >
               <h2 id="atlas-preview-heading" style={sectionTitle}>
                 Atlas &amp; live preview
               </h2>
@@ -2190,9 +2408,40 @@ export default function ShoeboxBitmapFontEditor() {
                 }}
               >
                 <div style={{ display: 'flex', flexDirection: 'column', minWidth: 0, gap: 6 }}>
-                  <WithTooltip darkTheme={darkTheme} tip="Atlas: wheel zoom, drag to pan, drag a glyph box to change atlas X/Y in the font.">
-                    <div style={{ fontSize: 12, fontWeight: 600, color: textMuted }}>Texture</div>
-                  </WithTooltip>
+                  <div
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      gap: 8,
+                      minWidth: 0,
+                    }}
+                  >
+                    <WithTooltip darkTheme={darkTheme} tip="Atlas: wheel zoom, drag to pan, drag a glyph box to change atlas X/Y in the font.">
+                      <div style={{ fontSize: 12, fontWeight: 600, color: textMuted }}>Texture</div>
+                    </WithTooltip>
+                    <WithTooltip darkTheme={darkTheme} tip="Reset pan and zoom so the atlas fits and is centered in the preview.">
+                      <button
+                        type="button"
+                        disabled={!hasXml || !activeAtlasUrl}
+                        onClick={() => textureRef.current?.resetPreviewView()}
+                        style={{
+                          fontSize: 11,
+                          fontWeight: 600,
+                          padding: '3px 8px',
+                          borderRadius: 6,
+                          border: `1px solid ${inputBorder}`,
+                          cursor: !hasXml || !activeAtlasUrl ? 'not-allowed' : 'pointer',
+                          background: darkTheme ? '#334155' : '#e5e7eb',
+                          color: text,
+                          flexShrink: 0,
+                          opacity: !hasXml || !activeAtlasUrl ? 0.55 : 1,
+                        }}
+                      >
+                        Center
+                      </button>
+                    </WithTooltip>
+                  </div>
                   {model.pages.length > 1 && (
                     <div role="tablist" aria-label="Atlas page" style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
                       {[...model.pages]
@@ -2236,9 +2485,40 @@ export default function ShoeboxBitmapFontEditor() {
                   </WithTooltip>
                 </div>
                 <div style={{ display: 'flex', flexDirection: 'column', minWidth: 0, gap: 6 }}>
-                  <WithTooltip darkTheme={darkTheme} tip="Live BitmapText using BitmapFont.install with your XML and atlas.">
-                    <div style={{ fontSize: 12, fontWeight: 600, color: textMuted }}>Pixi preview</div>
-                  </WithTooltip>
+                  <div
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      gap: 8,
+                      minWidth: 0,
+                    }}
+                  >
+                    <WithTooltip darkTheme={darkTheme} tip="Live BitmapText using BitmapFont.install with your XML and atlas.">
+                      <div style={{ fontSize: 12, fontWeight: 600, color: textMuted }}>Pixi preview</div>
+                    </WithTooltip>
+                    <WithTooltip darkTheme={darkTheme} tip="Reset pan and zoom so the preview text fits and is centered in the box.">
+                      <button
+                        type="button"
+                        disabled={atlasPixelMatchesCommon !== true}
+                        onClick={() => previewRef.current?.resetPreviewView()}
+                        style={{
+                          fontSize: 11,
+                          fontWeight: 600,
+                          padding: '3px 8px',
+                          borderRadius: 6,
+                          border: `1px solid ${inputBorder}`,
+                          cursor: atlasPixelMatchesCommon !== true ? 'not-allowed' : 'pointer',
+                          background: darkTheme ? '#334155' : '#e5e7eb',
+                          color: text,
+                          flexShrink: 0,
+                          opacity: atlasPixelMatchesCommon !== true ? 0.55 : 1,
+                        }}
+                      >
+                        Center
+                      </button>
+                    </WithTooltip>
+                  </div>
                   <WithTooltip darkTheme={darkTheme} block tip="Renders the same way as in-game BitmapText.">
                     <div
                       ref={previewHostRef}
@@ -2279,6 +2559,10 @@ export default function ShoeboxBitmapFontEditor() {
                       <ScrubNumberInput
                         value={model.common.globalXAdvance ?? 0}
                         onValueChange={(n) => setModel((p) => setCommon(p, { globalXAdvance: n }))}
+                        baselineValue={baselineModel.common.globalXAdvance ?? 0}
+                        resetControlBg={inputBg}
+                        resetControlBorder={inputBorder}
+                        resetControlColor={text}
                         style={{
                           width: 88,
                           padding: 6,
@@ -2295,14 +2579,40 @@ export default function ShoeboxBitmapFontEditor() {
                     Per-glyph column is the extra advance on top of this value; XML still stores combined xadvance per character.
                   </span>
                 </div>
+                <label
+                  style={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: 8,
+                    cursor: 'pointer',
+                    fontSize: 12,
+                    color: text,
+                  }}
+                >
+                  <WithTooltip
+                    darkTheme={darkTheme}
+                    tip="When off, Atlas X/Y, width, and height are hidden in the table and in the quick glyph editor from the texture view (offsets and advance stay visible). Dragging glyph boxes on the atlas still updates X/Y. Preference is saved in this browser."
+                  >
+                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+                      <input
+                        type="checkbox"
+                        checked={showAtlasRectColumns}
+                        onChange={(e) => setShowAtlasRectColumns(e.target.checked)}
+                      />
+                      Show atlas X/Y, width &amp; height
+                    </span>
+                  </WithTooltip>
+                </label>
                 <BitmapFontCharTable
                   ref={charTableRef}
                   chars={model.chars}
+                  baselineChars={baselineModel.chars}
                   selectedId={selectedCharId}
                   onSelect={setSelectedCharId}
                   onPatch={patchCharAt}
                   onBulkDelta={bulkCharDelta}
                   onBulkPreset={bulkCharPreset}
+                  showAtlasRectColumns={showAtlasRectColumns}
                   darkTheme={darkTheme}
                   text={text}
                   textMuted={textMuted}
@@ -2358,6 +2668,7 @@ export default function ShoeboxBitmapFontEditor() {
                 <BitmapFontKerningEditor
                   ref={kernEditorRef}
                   kernings={model.kernings}
+                  baselineKernings={baselineModel.kernings}
                   onPatch={(i, p) => setModel((prev) => patchKerning(prev, i, p))}
                   onRemove={(i) => setModel((prev) => removeKerningAt(prev, i))}
                   onAdd={() => setModel((prev) => addKerning(prev, { first: 32, second: 32, amount: 0 }))}
@@ -2642,6 +2953,291 @@ export default function ShoeboxBitmapFontEditor() {
           </>
         )}
       </div>
+        {atlasGlyphPopover &&
+          atlasGlyphPopoverChar &&
+          atlasGlyphPopoverPosition &&
+          typeof document !== 'undefined' &&
+          createPortal(
+            <div
+              ref={atlasGlyphPopoverRef}
+              role="dialog"
+              aria-labelledby="atlas-glyph-popover-title"
+              style={{
+                position: 'fixed',
+                left: atlasGlyphPopoverPosition.left,
+                top: atlasGlyphPopoverPosition.top,
+                width: atlasGlyphPopoverPosition.width,
+                zIndex: SHOEBOX_GLYPH_POPOVER_Z_INDEX,
+                padding: 14,
+                borderRadius: 10,
+                border: `1px solid ${panelBorder}`,
+                background: panelBg,
+                boxShadow: darkTheme ? '0 12px 40px rgba(0,0,0,0.55)' : '0 12px 40px rgba(0,0,0,0.18)',
+                maxHeight: 'min(420px, 70vh)',
+                overflowY: 'auto',
+                color: text,
+              }}
+            >
+              <div
+                style={{
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  alignItems: 'flex-start',
+                  gap: 10,
+                  marginBottom: 10,
+                }}
+              >
+                <h3 id="atlas-glyph-popover-title" style={{ margin: 0, fontSize: 14, fontWeight: 700, lineHeight: 1.35 }}>
+                  Glyph U+{atlasGlyphPopoverChar.ch.id.toString(16).toUpperCase()} ({atlasGlyphPopoverChar.ch.id}){' '}
+                  <span style={{ fontWeight: 500, color: textMuted }}>{glyphLabelForCode(atlasGlyphPopoverChar.ch.id)}</span>
+                </h3>
+                <button
+                  type="button"
+                  onClick={closeAtlasGlyphPopover}
+                  aria-label="Close glyph editor"
+                  style={{
+                    flexShrink: 0,
+                    fontSize: 12,
+                    fontWeight: 600,
+                    padding: '4px 10px',
+                    cursor: 'pointer',
+                    borderRadius: 6,
+                    border: `1px solid ${inputBorder}`,
+                    background: inputBg,
+                    color: text,
+                  }}
+                >
+                  Close
+                </button>
+              </div>
+              <WithTooltip
+                darkTheme={darkTheme}
+                block
+                portalZIndex={GLYPH_POPOVER_TIP_PORTAL_Z}
+                tip={GLYPH_POPOVER_FIELD_TIPS.showAtlasRect}
+              >
+                <label
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 8,
+                    fontSize: 11,
+                    color: textMuted,
+                    cursor: 'pointer',
+                    marginBottom: 6,
+                  }}
+                >
+                  <input
+                    type="checkbox"
+                    checked={showAtlasRectColumns}
+                    onChange={(e) => setShowAtlasRectColumns(e.target.checked)}
+                  />
+                  Show atlas X/Y, width &amp; height
+                </label>
+              </WithTooltip>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 10, fontSize: 11 }}>
+                {showAtlasRectColumns && (
+                  <>
+                    <WithTooltip
+                      darkTheme={darkTheme}
+                      block
+                      portalZIndex={GLYPH_POPOVER_TIP_PORTAL_Z}
+                      tip={GLYPH_POPOVER_FIELD_TIPS.atlasX}
+                    >
+                      <label style={{ display: 'flex', flexDirection: 'column', gap: 4, color: textMuted }}>
+                        Atlas X
+                        <ScrubNumberInput
+                          value={atlasGlyphPopoverChar.ch.x}
+                          onValueChange={(n) => patchCharAt(atlasGlyphPopoverIndex, { x: n })}
+                          baselineValue={atlasGlyphPopoverChar.bk?.x}
+                          resetControlBg={inputBg}
+                          resetControlBorder={inputBorder}
+                          resetControlColor={text}
+                          style={{
+                            width: '100%',
+                            padding: 6,
+                            background: inputBg,
+                            color: text,
+                            border: `1px solid ${inputBorder}`,
+                            borderRadius: 4,
+                            boxSizing: 'border-box',
+                          }}
+                        />
+                      </label>
+                    </WithTooltip>
+                    <WithTooltip
+                      darkTheme={darkTheme}
+                      block
+                      portalZIndex={GLYPH_POPOVER_TIP_PORTAL_Z}
+                      tip={GLYPH_POPOVER_FIELD_TIPS.atlasY}
+                    >
+                      <label style={{ display: 'flex', flexDirection: 'column', gap: 4, color: textMuted }}>
+                        Atlas Y
+                        <ScrubNumberInput
+                          value={atlasGlyphPopoverChar.ch.y}
+                          onValueChange={(n) => patchCharAt(atlasGlyphPopoverIndex, { y: n })}
+                          baselineValue={atlasGlyphPopoverChar.bk?.y}
+                          resetControlBg={inputBg}
+                          resetControlBorder={inputBorder}
+                          resetControlColor={text}
+                          style={{
+                            width: '100%',
+                            padding: 6,
+                            background: inputBg,
+                            color: text,
+                            border: `1px solid ${inputBorder}`,
+                            borderRadius: 4,
+                            boxSizing: 'border-box',
+                          }}
+                        />
+                      </label>
+                    </WithTooltip>
+                    <WithTooltip
+                      darkTheme={darkTheme}
+                      block
+                      portalZIndex={GLYPH_POPOVER_TIP_PORTAL_Z}
+                      tip={GLYPH_POPOVER_FIELD_TIPS.width}
+                    >
+                      <label style={{ display: 'flex', flexDirection: 'column', gap: 4, color: textMuted }}>
+                        Width
+                        <ScrubNumberInput
+                          value={atlasGlyphPopoverChar.ch.width}
+                          onValueChange={(n) => patchCharAt(atlasGlyphPopoverIndex, { width: n })}
+                          baselineValue={atlasGlyphPopoverChar.bk?.width}
+                          resetControlBg={inputBg}
+                          resetControlBorder={inputBorder}
+                          resetControlColor={text}
+                          style={{
+                            width: '100%',
+                            padding: 6,
+                            background: inputBg,
+                            color: text,
+                            border: `1px solid ${inputBorder}`,
+                            borderRadius: 4,
+                            boxSizing: 'border-box',
+                          }}
+                        />
+                      </label>
+                    </WithTooltip>
+                    <WithTooltip
+                      darkTheme={darkTheme}
+                      block
+                      portalZIndex={GLYPH_POPOVER_TIP_PORTAL_Z}
+                      tip={GLYPH_POPOVER_FIELD_TIPS.height}
+                    >
+                      <label style={{ display: 'flex', flexDirection: 'column', gap: 4, color: textMuted }}>
+                        Height
+                        <ScrubNumberInput
+                          value={atlasGlyphPopoverChar.ch.height}
+                          onValueChange={(n) => patchCharAt(atlasGlyphPopoverIndex, { height: n })}
+                          baselineValue={atlasGlyphPopoverChar.bk?.height}
+                          resetControlBg={inputBg}
+                          resetControlBorder={inputBorder}
+                          resetControlColor={text}
+                          style={{
+                            width: '100%',
+                            padding: 6,
+                            background: inputBg,
+                            color: text,
+                            border: `1px solid ${inputBorder}`,
+                            borderRadius: 4,
+                            boxSizing: 'border-box',
+                          }}
+                        />
+                      </label>
+                    </WithTooltip>
+                  </>
+                )}
+                <WithTooltip
+                  darkTheme={darkTheme}
+                  block
+                  portalZIndex={GLYPH_POPOVER_TIP_PORTAL_Z}
+                  tip={GLYPH_POPOVER_FIELD_TIPS.xoffset}
+                >
+                  <label style={{ display: 'flex', flexDirection: 'column', gap: 4, color: textMuted }}>
+                    Offset X
+                    <ScrubNumberInput
+                      value={atlasGlyphPopoverChar.ch.xoffset}
+                      onValueChange={(n) => patchCharAt(atlasGlyphPopoverIndex, { xoffset: n })}
+                      baselineValue={atlasGlyphPopoverChar.bk?.xoffset}
+                      resetControlBg={inputBg}
+                      resetControlBorder={inputBorder}
+                      resetControlColor={text}
+                      style={{
+                        width: '100%',
+                        padding: 6,
+                        background: inputBg,
+                        color: text,
+                        border: `1px solid ${inputBorder}`,
+                        borderRadius: 4,
+                        boxSizing: 'border-box',
+                      }}
+                    />
+                  </label>
+                </WithTooltip>
+                <WithTooltip
+                  darkTheme={darkTheme}
+                  block
+                  portalZIndex={GLYPH_POPOVER_TIP_PORTAL_Z}
+                  tip={GLYPH_POPOVER_FIELD_TIPS.yoffset}
+                >
+                  <label style={{ display: 'flex', flexDirection: 'column', gap: 4, color: textMuted }}>
+                    Offset Y
+                    <ScrubNumberInput
+                      value={atlasGlyphPopoverChar.ch.yoffset}
+                      onValueChange={(n) => patchCharAt(atlasGlyphPopoverIndex, { yoffset: n })}
+                      baselineValue={atlasGlyphPopoverChar.bk?.yoffset}
+                      resetControlBg={inputBg}
+                      resetControlBorder={inputBorder}
+                      resetControlColor={text}
+                      style={{
+                        width: '100%',
+                        padding: 6,
+                        background: inputBg,
+                        color: text,
+                        border: `1px solid ${inputBorder}`,
+                        borderRadius: 4,
+                        boxSizing: 'border-box',
+                      }}
+                    />
+                  </label>
+                </WithTooltip>
+                <WithTooltip
+                  darkTheme={darkTheme}
+                  block
+                  portalZIndex={GLYPH_POPOVER_TIP_PORTAL_Z}
+                  tip={GLYPH_POPOVER_FIELD_TIPS.xadvance}
+                >
+                  <label style={{ display: 'flex', flexDirection: 'column', gap: 4, color: textMuted }}>
+                    +Advance X
+                    <ScrubNumberInput
+                      value={atlasGlyphPopoverChar.ch.xadvance}
+                      onValueChange={(n) => patchCharAt(atlasGlyphPopoverIndex, { xadvance: n })}
+                      baselineValue={atlasGlyphPopoverChar.bk?.xadvance}
+                      resetControlBg={inputBg}
+                      resetControlBorder={inputBorder}
+                      resetControlColor={text}
+                      style={{
+                        width: '100%',
+                        padding: 6,
+                        background: inputBg,
+                        color: text,
+                        border: `1px solid ${inputBorder}`,
+                        borderRadius: 4,
+                        boxSizing: 'border-box',
+                      }}
+                    />
+                  </label>
+                </WithTooltip>
+                <p style={{ margin: 0, fontSize: 10, color: textMuted, lineHeight: 1.45 }}>
+                  Drag the glyph rectangle on the atlas to move X/Y; click without dragging to open this panel. Per-glyph
+                  advance is on top of Global advance X (see Glyphs section). Use the checkbox above (or under Glyphs) to show
+                  atlas rect fields in this dialog and in the character table.
+                </p>
+              </div>
+            </div>,
+            document.body
+          )}
     </div>
   )
 }

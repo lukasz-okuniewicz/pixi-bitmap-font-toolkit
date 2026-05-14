@@ -1,6 +1,6 @@
 'use client'
 
-import React, { forwardRef, useImperativeHandle, useRef } from 'react'
+import React, { forwardRef, useImperativeHandle, useMemo, useRef } from 'react'
 
 import { ScrubNumberInput } from '@/components/ScrubNumberInput'
 import { WithTooltip } from '@/components/WithTooltip'
@@ -12,6 +12,8 @@ export type BitmapFontKerningEditorHandle = {
 
 type Props = {
   kernings: BitmapFontKerning[]
+  /** Kernings from the last full font replace; used for “restore loaded” on each pair field. */
+  baselineKernings: BitmapFontKerning[]
   onPatch: (index: number, patch: Partial<BitmapFontKerning>) => void
   onRemove: (index: number) => void
   onAdd: () => void
@@ -30,6 +32,7 @@ type Props = {
 export const BitmapFontKerningEditor = forwardRef<BitmapFontKerningEditorHandle, Props>(function BitmapFontKerningEditor(
   {
     kernings,
+    baselineKernings,
     onPatch,
     onRemove,
     onAdd,
@@ -47,6 +50,14 @@ export const BitmapFontKerningEditor = forwardRef<BitmapFontKerningEditorHandle,
   ref
 ) {
   const scrollBodyRef = useRef<HTMLDivElement>(null)
+
+  const baselineByPair = useMemo(() => {
+    const m = new Map<string, BitmapFontKerning>()
+    for (const k of baselineKernings) {
+      m.set(`${k.first}_${k.second}`, k)
+    }
+    return m
+  }, [baselineKernings])
 
   useImperativeHandle(ref, () => ({
     scrollToPair(first: number, second: number) {
@@ -147,7 +158,9 @@ export const BitmapFontKerningEditor = forwardRef<BitmapFontKerningEditorHandle,
               </tr>
             </thead>
             <tbody>
-              {kernings.map((k, i) => (
+              {kernings.map((k, i) => {
+                const bk = baselineByPair.get(`${k.first}_${k.second}`)
+                return (
                 <tr
                   key={`${k.first}-${k.second}-${i}`}
                   data-kern-row={`${k.first}_${k.second}`}
@@ -158,6 +171,10 @@ export const BitmapFontKerningEditor = forwardRef<BitmapFontKerningEditorHandle,
                       <ScrubNumberInput
                         value={k.first}
                         onValueChange={(n) => onPatch(i, { first: n })}
+                        baselineValue={bk?.first}
+                        resetControlBg={inputBg}
+                        resetControlBorder={inputBorder}
+                        resetControlColor={text}
                         style={{
                           width: '100%',
                           fontSize: 10,
@@ -177,6 +194,10 @@ export const BitmapFontKerningEditor = forwardRef<BitmapFontKerningEditorHandle,
                       <ScrubNumberInput
                         value={k.second}
                         onValueChange={(n) => onPatch(i, { second: n })}
+                        baselineValue={bk?.second}
+                        resetControlBg={inputBg}
+                        resetControlBorder={inputBorder}
+                        resetControlColor={text}
                         style={{
                           width: '100%',
                           fontSize: 10,
@@ -196,6 +217,10 @@ export const BitmapFontKerningEditor = forwardRef<BitmapFontKerningEditorHandle,
                       <ScrubNumberInput
                         value={k.amount}
                         onValueChange={(n) => onPatch(i, { amount: n })}
+                        baselineValue={bk?.amount}
+                        resetControlBg={inputBg}
+                        resetControlBorder={inputBorder}
+                        resetControlColor={text}
                         style={{
                           width: '100%',
                           fontSize: 10,
@@ -229,7 +254,8 @@ export const BitmapFontKerningEditor = forwardRef<BitmapFontKerningEditorHandle,
                     </WithTooltip>
                   </td>
                 </tr>
-              ))}
+                )
+              })}
             </tbody>
           </table>
         </div>

@@ -103,8 +103,9 @@ export function ShoeboxHelpSection({ darkTheme, text, textMuted, inputBorder, pa
       </p>
       <p style={p}>
         The <strong>Texture</strong> panel shows your atlas with optional <strong>glyph outlines</strong>. You can drag a glyph rectangle to move it on
-        the atlas; the character table updates accordingly. Use <strong>Preview text</strong> to type sample copy (including line breaks) and check
-        real-world strings.
+        the atlas; the character table updates accordingly. <strong>Click</strong> a glyph (without dragging) to open a quick editor for offsets and
+        advance (atlas X/Y, width, and height appear there when you enable <strong>Show atlas X/Y, width &amp; height</strong> under Glyphs). Use{' '}
+        <strong>Preview text</strong> to type sample copy (including line breaks) and check real-world strings.
       </p>
 
       <h2 style={h2}>For developers</h2>
@@ -142,7 +143,7 @@ export function ShoeboxHelpSection({ darkTheme, text, textMuted, inputBorder, pa
         </li>
         <li>
           <strong>Undo / Redo</strong> — <kbd style={codeStyle}>⌘</kbd>/<kbd style={codeStyle}>Ctrl</kbd>+<kbd style={codeStyle}>Z</kbd> undo,{' '}
-          <kbd style={codeStyle}>⇧⌘Z</kbd> / <kbd style={codeStyle}>⌘Y</kbd> redo (disabled while typing in inputs).
+          <kbd style={codeStyle}>⇧⌘Z</kbd> / <kbd style={codeStyle}>⌘Y</kbd> redo (disabled while typing in inputs). Numeric fields and some text fields also show a small <strong>↺</strong> control to restore that field to the value from the <strong>last import or generator</strong> (not the same as undo).
         </li>
         <li>
           <strong>Session restore</strong> — The app may offer to restore a previous session from browser storage (includes your font data locally — treat as sensitive).

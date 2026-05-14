@@ -42,7 +42,10 @@ function rowMatchesFilter(c: BitmapFontChar, qRaw: string): boolean {
   return false
 }
 
-const GRID_COLS = '28px 52px 72px 56px 56px 56px 56px 56px 56px 56px 56px'
+const GRID_COLS_FULL = '28px 52px 72px 64px 64px 64px 64px 64px 64px 64px'
+const GRID_COLS_COMPACT = '28px 52px 72px 64px 64px 64px'
+
+const ATLAS_RECT_HDR_KEYS = new Set(['x', 'y', 'w', 'h'])
 
 export type BitmapFontBulkDelta = {
   dx?: number
@@ -62,6 +65,8 @@ export type BitmapFontCharTableHandle = {
 
 type Props = {
   chars: BitmapFontChar[]
+  /** Glyphs from the last full font replace; used for per-field “restore loaded” on metrics. */
+  baselineChars: BitmapFontChar[]
   selectedId: number | null
   onSelect: (id: number | null) => void
   onPatch: (index: number, patch: Partial<BitmapFontChar>) => void
@@ -72,10 +77,26 @@ type Props = {
   textMuted: string
   inputBorder: string
   inputBg: string
+  /** When true, show atlas X/Y, width, height columns (default false for designer-focused layout). */
+  showAtlasRectColumns?: boolean
 }
 
 export const BitmapFontCharTable = forwardRef<BitmapFontCharTableHandle, Props>(function BitmapFontCharTable(
-  { chars, selectedId, onSelect, onPatch, onBulkDelta, onBulkPreset, darkTheme, text, textMuted, inputBorder, inputBg },
+  {
+    chars,
+    baselineChars,
+    selectedId,
+    onSelect,
+    onPatch,
+    onBulkDelta,
+    onBulkPreset,
+    darkTheme,
+    text,
+    textMuted,
+    inputBorder,
+    inputBg,
+    showAtlasRectColumns = false,
+  },
   ref
 ) {
   const parentRef = useRef<HTMLDivElement>(null)
@@ -98,6 +119,26 @@ export const BitmapFontCharTable = forwardRef<BitmapFontCharTableHandle, Props>(
     }
     return out
   }, [chars, filter])
+
+  const baselineByCharId = useMemo(() => {
+    const m = new Map<number, BitmapFontChar>()
+    for (const ch of baselineChars) {
+      m.set(ch.id, ch)
+    }
+    return m
+  }, [baselineChars])
+
+  const gridTemplateColumns = showAtlasRectColumns ? GRID_COLS_FULL : GRID_COLS_COMPACT
+
+  const metricFields = useMemo(
+    () =>
+      showAtlasRectColumns
+        ? (['x', 'y', 'width', 'height', 'xoffset', 'yoffset', 'xadvance'] as const)
+        : (['xoffset', 'yoffset', 'xadvance'] as const),
+    [showAtlasRectColumns]
+  )
+
+  const charGridMinWidth = showAtlasRectColumns ? 920 : 620
 
   const rowVirtualizer = useVirtualizer({
     count: rowIndices.length,
@@ -268,6 +309,8 @@ export const BitmapFontCharTable = forwardRef<BitmapFontCharTableHandle, Props>(
     },
   ]
 
+  const visibleHdr = hdr.filter((h) => showAtlasRectColumns || !ATLAS_RECT_HDR_KEYS.has(h.key))
+
   const fieldTooltips: Record<'x' | 'y' | 'width' | 'height' | 'xoffset' | 'yoffset' | 'xadvance', string> = {
     x: 'Left position of glyph rectangle in the texture atlas (pixels)',
     y: 'Top position of glyph rectangle in the texture atlas (pixels)',
@@ -381,7 +424,8 @@ export const BitmapFontCharTable = forwardRef<BitmapFontCharTableHandle, Props>(
           Select filtered
         </button>
         <span style={{ fontSize: 10, color: textMuted }}>
-          Focus the grid (click below headers), then ↑/↓ Home/End navigate; Enter edits atlas X.
+          Focus the grid (click below headers), then ↑/↓ Home/End navigate; Enter focuses the first metric field
+          {showAtlasRectColumns ? ' (Atlas X when atlas columns are shown).' : ' (Offset X when atlas columns are hidden).'}
         </span>
       </div>
 
@@ -399,7 +443,7 @@ export const BitmapFontCharTable = forwardRef<BitmapFontCharTableHandle, Props>(
           }}
         >
           <span style={{ fontWeight: 600, color: text }}>Bulk ({selectedIndices.size} rows)</span>
-          {onBulkDelta && (
+          {onBulkDelta && showAtlasRectColumns && (
             <>
               <label style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
                 x
@@ -419,6 +463,10 @@ export const BitmapFontCharTable = forwardRef<BitmapFontCharTableHandle, Props>(
                   style={{ width: 52, fontSize: 11, padding: 4, borderRadius: 4, border: `1px solid ${inputBorder}`, background: inputBg, color: text }}
                 />
               </label>
+            </>
+          )}
+          {onBulkDelta && (
+            <>
               <label style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
                 xoff
                 <input
@@ -496,7 +544,7 @@ export const BitmapFontCharTable = forwardRef<BitmapFontCharTableHandle, Props>(
       <div
         style={{
           display: 'grid',
-          gridTemplateColumns: GRID_COLS,
+          gridTemplateColumns,
           gap: 4,
           padding: '4px 8px',
           fontSize: 9,
@@ -508,7 +556,7 @@ export const BitmapFontCharTable = forwardRef<BitmapFontCharTableHandle, Props>(
           zIndex: 1,
         }}
       >
-        {hdr.map((h) => (
+        {visibleHdr.map((h) => (
           <span
             key={h.key}
             style={{ position: 'relative', display: 'inline-block', cursor: h.hint ? 'help' : 'default', textAlign: 'center' }}
@@ -551,7 +599,11 @@ export const BitmapFontCharTable = forwardRef<BitmapFontCharTableHandle, Props>(
       <WithTooltip
         darkTheme={darkTheme}
         block
-        tip="Scroll to browse characters. Cmd/Ctrl+click for multi-select. Bulk row adds the typed deltas to each selected glyph. Click the scroll area (not a cell) to focus the grid, then use arrow keys to move and Enter to edit atlas X."
+        tip={
+          showAtlasRectColumns
+            ? 'Scroll to browse characters. Cmd/Ctrl+click for multi-select. Bulk row adds the typed deltas to each selected glyph. Click the scroll area (not a cell) to focus the grid, then use arrow keys to move and Enter to focus Atlas X.'
+            : 'Scroll to browse characters. Cmd/Ctrl+click for multi-select. Bulk row adds the typed deltas to each selected glyph. Click the scroll area (not a cell) to focus the grid, then use arrow keys to move and Enter to focus Offset X.'
+        }
       >
         <div
           ref={parentRef}
@@ -563,8 +615,8 @@ export const BitmapFontCharTable = forwardRef<BitmapFontCharTableHandle, Props>(
           aria-rowcount={rowIndices.length}
           onKeyDown={onCharGridKeyDown}
           style={{
-            flex: 1,
             minHeight: 160,
+            maxHeight: 'min(520px, 50dvh)',
             overflow: 'auto',
             border: `1px solid ${inputBorder}`,
             borderRadius: 6,
@@ -572,7 +624,7 @@ export const BitmapFontCharTable = forwardRef<BitmapFontCharTableHandle, Props>(
             outline: 'none',
           }}
         >
-          <div style={{ height: `${rowVirtualizer.getTotalSize()}px`, position: 'relative', width: '100%', minWidth: 860 }}>
+          <div style={{ height: `${rowVirtualizer.getTotalSize()}px`, position: 'relative', width: '100%', minWidth: charGridMinWidth }}>
             {rowVirtualizer.getVirtualItems().map((v) => {
               const modelIndex = rowIndices[v.index]!
               const c = chars[modelIndex]
@@ -591,7 +643,7 @@ export const BitmapFontCharTable = forwardRef<BitmapFontCharTableHandle, Props>(
                     height: `${v.size}px`,
                     transform: `translateY(${v.start}px)`,
                     display: 'grid',
-                    gridTemplateColumns: GRID_COLS,
+                    gridTemplateColumns,
                     alignItems: 'center',
                     gap: 4,
                     padding: '2px 8px',
@@ -653,24 +705,32 @@ export const BitmapFontCharTable = forwardRef<BitmapFontCharTableHandle, Props>(
                       {glyphLabelForCode(c.id)}
                     </span>
                   </WithTooltip>
-                  {(['x', 'y', 'width', 'height', 'xoffset', 'yoffset', 'xadvance'] as const).map((field) => (
-                    <WithTooltip key={field} darkTheme={darkTheme} block tip={fieldTooltips[field]}>
-                      <ScrubNumberInput
-                        value={c[field]}
-                        onValueChange={(n) => cellIn(modelIndex, field, String(n))}
-                        style={{
-                          width: '100%',
-                          fontSize: 10,
-                          padding: '2px 4px',
-                          background: inputBg,
-                          color: text,
-                          border: `1px solid ${inputBorder}`,
-                          borderRadius: 4,
-                          boxSizing: 'border-box',
-                        }}
-                      />
-                    </WithTooltip>
-                  ))}
+                  {metricFields.map((field) => {
+                    const baseChar = baselineByCharId.get(c.id)
+                    const baselineMetric = baseChar ? baseChar[field] : null
+                    return (
+                      <WithTooltip key={field} darkTheme={darkTheme} block tip={fieldTooltips[field]}>
+                        <ScrubNumberInput
+                          value={c[field]}
+                          onValueChange={(n) => cellIn(modelIndex, field, String(n))}
+                          baselineValue={baselineMetric}
+                          resetControlBg={inputBg}
+                          resetControlBorder={inputBorder}
+                          resetControlColor={text}
+                          style={{
+                            width: '100%',
+                            fontSize: 10,
+                            padding: '2px 4px',
+                            background: inputBg,
+                            color: text,
+                            border: `1px solid ${inputBorder}`,
+                            borderRadius: 4,
+                            boxSizing: 'border-box',
+                          }}
+                        />
+                      </WithTooltip>
+                    )
+                  })}
                 </div>
               )
             })}

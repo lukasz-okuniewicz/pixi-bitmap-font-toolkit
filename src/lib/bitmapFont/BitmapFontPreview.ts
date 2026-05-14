@@ -80,6 +80,22 @@ export class BitmapFontPreview {
     this.renderOnce()
   }
 
+  /** Clear pan/zoom gesture state and fit preview text centered in the viewport (same as after font sync). */
+  resetPreviewView(): void {
+    if (this.destroyed || !this.app || !this.contentRoot || !this.bitmapText) return
+    this.dragging = null
+    this.touchPanId = null
+    if (this.previewEventsBound) {
+      this.container.style.cursor = 'grab'
+    }
+    this.userAdjustedPreviewTransform = false
+    this.syncRendererSizeToHost()
+    this.layoutPreviewText(this.bitmapText)
+    this.applyAutoFitToViewport()
+    this.drawGuides()
+    this.renderOnce()
+  }
+
   /**
    * Delta in font pixel units (BMFont `yoffset`) to add to every glyph so the preview string’s
    * axis-aligned bounds are vertically centered on this node’s origin (Anchor Y: `BitmapText.y`
@@ -88,10 +104,10 @@ export class BitmapFontPreview {
   getUniformYoffsetDeltaForVisualCenter(): number | null {
     const PIXI = this.pixi
     const face = this.installedFace
-    if (!PIXI || !this.app || !this.bitmapText || !face) return null
+    const root = this.contentRoot as unknown as { scale: { y: number } } | null
+    if (!PIXI || !this.app || !this.bitmapText || !face || !root) return null
     const font = PIXI.BitmapFont.available[face]
     if (!font || font.size <= 0) return null
-    this.renderOnce()
     this.renderOnce()
     const bt = this.bitmapText as unknown as {
       fontSize: number
@@ -104,9 +120,13 @@ export class BitmapFontPreview {
     const p = new PIXI.Point()
     bt.getGlobalPosition(p)
     const pixelShift = p.y - centerGlobalY
-    const scale = bt.fontSize / font.size
-    if (!Number.isFinite(scale) || scale <= 0) return null
-    const d = Math.round(pixelShift / scale)
+    const fontToLocal = bt.fontSize / font.size
+    if (!Number.isFinite(fontToLocal) || fontToLocal <= 0) return null
+    const zoomY = Number.isFinite(root.scale.y) ? Math.abs(root.scale.y) : 1
+    const denom = fontToLocal * zoomY
+    if (!Number.isFinite(denom) || denom <= 0) return null
+    if (Math.abs(pixelShift) < denom * 0.5) return null
+    const d = Math.round(pixelShift / denom)
     return d === 0 ? null : d
   }
 

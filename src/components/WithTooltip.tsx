@@ -3,6 +3,12 @@
 import React, { useLayoutEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 
+/** Portaled tooltips stack here; glyph popover uses +1 so it paints above default tooltips. */
+export const SHOEBOX_TOOLTIP_Z_INDEX = 2_147_000_000
+export const SHOEBOX_GLYPH_POPOVER_Z_INDEX = SHOEBOX_TOOLTIP_Z_INDEX + 1
+/** Use for `WithTooltip` inside the glyph popover so hints paint above the popover panel. */
+export const SHOEBOX_TOOLTIP_ABOVE_POPOVER_Z_INDEX = SHOEBOX_TOOLTIP_Z_INDEX + 2
+
 export type WithTooltipProps = {
   tip: string
   children: React.ReactNode
@@ -10,6 +16,8 @@ export type WithTooltipProps = {
   /** Stretch wrapper to full width (grid cells, textareas) */
   block?: boolean
   maxWidthPx?: number
+  /** Portaled tooltip z-index (default: same layer as other page tooltips). */
+  portalZIndex?: number
 }
 
 /**
@@ -18,7 +26,7 @@ export type WithTooltipProps = {
  * Hides immediately on mouse out; `relatedTarget` keeps the tooltip open while
  * moving from the trigger onto the portaled panel.
  */
-export function WithTooltip({ tip, children, darkTheme, block, maxWidthPx = 320 }: WithTooltipProps) {
+export function WithTooltip({ tip, children, darkTheme, block, maxWidthPx = 320, portalZIndex = SHOEBOX_TOOLTIP_Z_INDEX }: WithTooltipProps) {
   const wrapRef = useRef<HTMLSpanElement>(null)
   const tipRef = useRef<HTMLDivElement>(null)
   const [open, setOpen] = useState(false)
@@ -81,7 +89,7 @@ export function WithTooltip({ tip, children, darkTheme, block, maxWidthPx = 320 
           position: 'fixed',
           left: pos.left,
           top: pos.top,
-          zIndex: 2_147_000_000,
+          zIndex: portalZIndex,
           minWidth: 100,
           maxWidth: maxWidthPx,
           padding: '8px 10px',
