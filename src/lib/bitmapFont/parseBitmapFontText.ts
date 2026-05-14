@@ -1,5 +1,5 @@
 import { numAttr, parseKeyValueLine } from './parseAttrs'
-import type { BitmapFontChar } from './types'
+import type { BitmapFontChar, BitmapFontModel } from './types'
 import { decomposeGlobalXAdvanceFromChars, defaultBitmapFontModel } from './types'
 
 /** Parse BMFont ASCII/text (.fnt) format. */
