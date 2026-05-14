@@ -1,6 +1,6 @@
 'use client'
 
-import React, { forwardRef, useImperativeHandle, useMemo, useRef } from 'react'
+import React, { forwardRef, useCallback, useImperativeHandle, useMemo, useRef } from 'react'
 
 import { ScrubNumberInput } from '@/components/ScrubNumberInput'
 import { WithTooltip } from '@/components/WithTooltip'
@@ -17,10 +17,6 @@ type Props = {
   onPatch: (index: number, patch: Partial<BitmapFontKerning>) => void
   onRemove: (index: number) => void
   onAdd: () => void
-  previewFirst: string
-  previewSecond: string
-  onPreviewFirst: (v: string) => void
-  onPreviewSecond: (v: string) => void
   charCodeLabel: (code: number) => string
   darkTheme: boolean
   text: string
@@ -36,10 +32,6 @@ export const BitmapFontKerningEditor = forwardRef<BitmapFontKerningEditorHandle,
     onPatch,
     onRemove,
     onAdd,
-    previewFirst,
-    previewSecond,
-    onPreviewFirst,
-    onPreviewSecond,
     charCodeLabel,
     darkTheme,
     text,
@@ -51,6 +43,13 @@ export const BitmapFontKerningEditor = forwardRef<BitmapFontKerningEditorHandle,
 ) {
   const scrollBodyRef = useRef<HTMLDivElement>(null)
 
+  const scrollRowIntoView = useCallback((first: number, second: number) => {
+    const el = scrollBodyRef.current?.querySelector(`[data-kern-row="${first}_${second}"]`)
+    if (el instanceof HTMLElement) {
+      el.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
+    }
+  }, [])
+
   const baselineByPair = useMemo(() => {
     const m = new Map<string, BitmapFontKerning>()
     for (const k of baselineKernings) {
@@ -61,59 +60,13 @@ export const BitmapFontKerningEditor = forwardRef<BitmapFontKerningEditorHandle,
 
   useImperativeHandle(ref, () => ({
     scrollToPair(first: number, second: number) {
-      const el = scrollBodyRef.current?.querySelector(`[data-kern-row="${first}_${second}"]`)
-      if (el instanceof HTMLElement) {
-        el.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
-      }
+      scrollRowIntoView(first, second)
     },
   }))
-
-  const a = previewFirst.length ? previewFirst.codePointAt(0) : null
-  const b = previewSecond.length ? previewSecond.codePointAt(0) : null
-  let pairAmount: number | null = null
-  if (a != null && b != null) {
-    const row = kernings.find((k) => k.first === a && k.second === b)
-    pairAmount = row ? row.amount : null
-  }
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
       <div style={{ fontSize: 13, fontWeight: 600, color: text }}>Kerning ({kernings.length})</div>
-      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center', fontSize: 10, color: textMuted }}>
-        <WithTooltip
-          darkTheme={darkTheme}
-          tip="Type or paste a character; the last character is used as the first code point in the pair you are previewing."
-        >
-          <span style={{ display: 'inline-block' }}>Kerning preview:</span>
-        </WithTooltip>
-        <WithTooltip
-          darkTheme={darkTheme}
-          tip="First glyph in the pair (Unicode). Decimal code is also shown in the table below."
-        >
-          <input
-            value={previewFirst}
-            onChange={(e) => onPreviewFirst(e.target.value.slice(-1) ? e.target.value.slice(-1) : '')}
-            placeholder="first"
-            maxLength={4}
-            style={{ width: 48, fontSize: 10, padding: 4, background: inputBg, color: text, border: `1px solid ${inputBorder}`, borderRadius: 4 }}
-          />
-        </WithTooltip>
-        <WithTooltip darkTheme={darkTheme} tip="Second glyph in the pair (Unicode).">
-          <input
-            value={previewSecond}
-            onChange={(e) => onPreviewSecond(e.target.value.slice(-1) ? e.target.value.slice(-1) : '')}
-            placeholder="second"
-            maxLength={4}
-            style={{ width: 48, fontSize: 10, padding: 4, background: inputBg, color: text, border: `1px solid ${inputBorder}`, borderRadius: 4 }}
-          />
-        </WithTooltip>
-        {pairAmount != null && (
-          <span style={{ color: text }}>
-            amount: <strong>{pairAmount}</strong>
-          </span>
-        )}
-        {a != null && b != null && pairAmount == null && <span style={{ color: textMuted }}>no pair</span>}
-      </div>
       <WithTooltip
         darkTheme={darkTheme}
         block
@@ -164,7 +117,9 @@ export const BitmapFontKerningEditor = forwardRef<BitmapFontKerningEditorHandle,
                 <tr
                   key={`${k.first}-${k.second}-${i}`}
                   data-kern-row={`${k.first}_${k.second}`}
-                  style={{ borderTop: `1px solid ${inputBorder}` }}
+                  style={{
+                    borderTop: `1px solid ${inputBorder}`,
+                  }}
                 >
                   <td style={{ padding: 4 }}>
                     <WithTooltip darkTheme={darkTheme} block tip="First glyph: Unicode code point (decimal).">

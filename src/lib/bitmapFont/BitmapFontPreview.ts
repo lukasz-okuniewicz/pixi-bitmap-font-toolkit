@@ -8,8 +8,14 @@ type PixiTexture = InstanceType<PixiNs['Texture']>
 export type BitmapFontPreviewOptions = {
   width: number
   height: number
-  /** RGB hex e.g. 0x1f2937; omit for transparent */
+  /** @deprecated Host element background is controlled by the app; canvas stays transparent. */
   background?: number
+}
+
+/** Pixi BitmapText layout: `maxWidth` 0 disables wrapping; `align` affects wrapped lines. */
+export type BitmapFontPreviewTextLayout = {
+  maxWidth: number
+  align: 'left' | 'center' | 'right'
 }
 
 /**
@@ -62,6 +68,7 @@ export class BitmapFontPreview {
   private syncGeneration = 0
   /** After wheel zoom or pan, do not auto-fit on sync/resize until a new font `face` is loaded. */
   private userAdjustedPreviewTransform = false
+  private textLayout: BitmapFontPreviewTextLayout = { maxWidth: 0, align: 'left' }
 
   constructor(container: HTMLElement, opts: BitmapFontPreviewOptions) {
     this.container = container
@@ -78,6 +85,26 @@ export class BitmapFontPreview {
     this.showAnchorCenterY = on
     this.drawGuides()
     this.renderOnce()
+  }
+
+  /** Update BitmapText wrapping / alignment; applies on next `sync` and to the current instance if present. */
+  setTextLayout(layout: Partial<BitmapFontPreviewTextLayout>) {
+    this.textLayout = { ...this.textLayout, ...layout }
+    if (!this.bitmapText) return
+    this.applyTextLayoutToCurrent()
+    this.layoutPreviewText(this.bitmapText)
+    this.applyAutoFitToViewport()
+    this.drawGuides()
+    this.renderOnce()
+  }
+
+  private applyTextLayoutToCurrent() {
+    const bt = this.bitmapText as unknown as { maxWidth?: number; align?: string } | null
+    if (!bt) return
+    bt.maxWidth = this.textLayout.maxWidth > 0 ? this.textLayout.maxWidth : 0
+    bt.align = this.textLayout.align
+    const validate = (bt as unknown as { updateText?: () => void }).updateText
+    if (typeof validate === 'function') validate.call(bt)
   }
 
   /** Clear pan/zoom gesture state and fit preview text centered in the viewport (same as after font sync). */
@@ -161,15 +188,16 @@ export class BitmapFontPreview {
         width: this.opts.width,
         height: this.opts.height,
         view: canvas,
-        backgroundAlpha: this.opts.background != null ? 1 : 0,
-        backgroundColor: this.opts.background,
+        backgroundAlpha: 0,
+        backgroundColor: 0x000000,
         resolution: Math.min(2, typeof window !== 'undefined' ? window.devicePixelRatio || 1 : 1),
         antialias: true,
         autoStart: false,
       })
       if (this.destroyed) {
         try {
-          app.destroy(true, { children: true, texture: true })
+          // Do not destroy global/shared atlas textures — other BitmapFontPreview instances may use the same pages.
+          app.destroy(true, { children: true, texture: false })
         } catch {
           try {
             app.destroy(false)
@@ -196,6 +224,7 @@ export class BitmapFontPreview {
   }
 
   resize(width: number, height: number) {
+    if (this.destroyed) return
     this.opts.width = width
     this.opts.height = height
     if (!this.app) return
@@ -257,6 +286,8 @@ export class BitmapFontPreview {
 
   destroy() {
     this.destroyed = true
+    /** Invalidate any in-flight `sync()` so it never calls `runSync` after the app is torn down. */
+    this.syncGeneration++
     this.userAdjustedPreviewTransform = false
     this.dragging = null
     this.touchPanId = null
@@ -264,7 +295,8 @@ export class BitmapFontPreview {
     this.uninstallFont()
     if (this.app) {
       try {
-        this.app.destroy(true, { children: true, texture: true })
+        // `texture: true` can destroy BaseTextures still referenced by another preview (same atlas URLs / BitmapFont cache).
+        this.app.destroy(true, { children: true, texture: false })
       } catch {
         try {
           this.app.destroy(false)
@@ -291,7 +323,13 @@ export class BitmapFontPreview {
     this.installedFace = null
   }
 
-  async sync(model: BitmapFontModel, textureUrls: string[], previewText: string, xmlOverride?: string): Promise<void> {
+  async sync(
+    model: BitmapFontModel,
+    textureUrls: string[],
+    previewText: string,
+    xmlOverride?: string,
+    textLayout?: Partial<BitmapFontPreviewTextLayout>
+  ): Promise<void> {
     if (this.destroyed) return
     const gen = ++this.syncGeneration
     try {
@@ -304,7 +342,7 @@ export class BitmapFontPreview {
       if (textureUrls.length === 0) return
       const textures = await this.loadTexturesFromUrls(PIXI, textureUrls)
       if (!textures || this.destroyed || gen !== this.syncGeneration) return
-      this.runSync(model, textures, previewText, xmlOverride, PIXI, app)
+      this.runSync(model, textures, previewText, xmlOverride, PIXI, app, textLayout)
     } catch (e) {
       if (!this.destroyed) {
         console.error('[BitmapFontPreview] sync failed', e)
@@ -338,10 +376,16 @@ export class BitmapFontPreview {
     previewText: string,
     xmlOverride: string | undefined,
     PIXI: PixiNs,
-    app: NonNullable<BitmapFontPreview['app']>
+    app: NonNullable<BitmapFontPreview['app']>,
+    textLayout?: Partial<BitmapFontPreviewTextLayout>
   ): void {
+    if (this.destroyed) return
     const root = this.contentRoot
     if (!root) return
+
+    if (textLayout) {
+      this.textLayout = { ...this.textLayout, ...textLayout }
+    }
 
     const previousFace = this.installedFace
     this.lineHeightRef = model.common.lineHeight
@@ -422,6 +466,9 @@ export class BitmapFontPreview {
       destroy: (o?: boolean) => void
     }
     const bt = new BitmapTextCtor(previewText || ' ', { fontName: face })
+    const btStyled = bt as unknown as { maxWidth: number; align: string }
+    btStyled.maxWidth = this.textLayout.maxWidth > 0 ? this.textLayout.maxWidth : 0
+    btStyled.align = this.textLayout.align
     this.layoutPreviewText(bt)
     this.bitmapText = bt as NonNullable<BitmapFontPreview['bitmapText']>
     root.addChild(bt)

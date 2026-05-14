@@ -14,7 +14,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Pixi: Bitmap Font Toolkit — BMFont editor",
+  title: "Bitmap Font Toolkit — BMFont editor",
   description:
     "Bitmap font toolkit for PixiJS: edit BMFont XML with a live preview; upload your atlas PNG and font XML.",
 };

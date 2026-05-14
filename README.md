@@ -1,4 +1,4 @@
-# Pixi: Bitmap Font Toolkit
+# Bitmap Font Toolkit
 
 Browser-based **BMFont** multitool for [PixiJS](https://pixijs.com/) workflows: load or generate bitmap font descriptors, edit metrics and kerning with a **Pixi.js** live preview, and export XML, ASCII `.fnt`, binary `.fnt`, or a ZIP of descriptor plus atlas images. **All processing runs in your browser**—nothing is uploaded to a server.
 

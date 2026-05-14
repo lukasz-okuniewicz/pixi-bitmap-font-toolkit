@@ -33,12 +33,11 @@ import { BitmapFontKerningEditor, type BitmapFontKerningEditorHandle } from '@/l
 import { BitmapFontPreview } from '@/lib/bitmapFont/BitmapFontPreview'
 import { BitmapFontTextureView } from '@/lib/bitmapFont/BitmapFontTextureView'
 import type { BitmapFontChar, BitmapFontModel } from '@/lib/bitmapFont/types'
-import type { BitmapFontDiagnosticTarget } from '@/lib/bitmapFont'
+import type { BitmapFontDiagnosticTarget, BitmapFontDiagnosticLevel } from '@/lib/bitmapFont'
 import { defaultBitmapFontModel, globalXAdvanceValue } from '@/lib/bitmapFont/types'
 import { isBitmapFontXmlString } from '@/lib/bitmapFont/isBitmapFontXml'
 import { charsetStripToModel } from '@/lib/bitmapFont/charsetStripToModel'
 import { decodeImageFileToImageData } from '@/lib/bitmapFont/decodeImageFileToImageData'
-import { estimateKerningsFromFontBuffer } from '@/lib/bitmapFont/extractKerningFromCanvas'
 import {
   clearBitmapFontSession,
   loadBitmapFontSession,
@@ -153,6 +152,15 @@ function observeElementSize(
 
 /** Host div height; ResizeObserver drives Pixi/texture sizing. */
 const PREVIEW_HOST_HEIGHT = 'clamp(200px, 28vh, 360px)'
+
+/** Pixi `fontName` for the loaded-snapshot preview only — avoids clobbering `model.info.face` in the global BitmapFont registry. */
+const SHOEBOX_PREVIEW_BASELINE_FACE = '__shoebox_preview_baseline__'
+
+function diagnosticLevelRank(level: BitmapFontDiagnosticLevel): number {
+  if (level === 'error') return 0
+  if (level === 'warn') return 1
+  return 2
+}
 
 const themeLight = {
   text: '#111827',
@@ -359,8 +367,9 @@ export default function ShoeboxBitmapFontEditor() {
   const [showBaseline, setShowBaseline] = useState(false)
   const [showAnchorCenterY, setShowAnchorCenterY] = useState(false)
   const [showOutlines, setShowOutlines] = useState(true)
-  const [kernEstimateBusy, setKernEstimateBusy] = useState(false)
-  const kernFontInputRef = useRef<HTMLInputElement>(null)
+  const [showAdvanceOverlay, setShowAdvanceOverlay] = useState(false)
+  /** Side-by-side Pixi: loaded snapshot (`baselineModel`) vs current edits. */
+  const [comparePixiToBaseline, setComparePixiToBaseline] = useState(false)
   const charTableRef = useRef<BitmapFontCharTableHandle>(null)
   const kernEditorRef = useRef<BitmapFontKerningEditorHandle>(null)
 
@@ -376,8 +385,6 @@ export default function ShoeboxBitmapFontEditor() {
     })
   }, [])
 
-  const [kernFirst, setKernFirst] = useState('')
-  const [kernSecond, setKernSecond] = useState('')
   const [exportFileName, setExportFileName] = useState('font.xml')
   const [showHelp, setShowHelp] = useState(false)
   const [diagnosticsOpen, setDiagnosticsOpen] = useState(true)
@@ -428,8 +435,10 @@ export default function ShoeboxBitmapFontEditor() {
   const [initialFontLoading, setInitialFontLoading] = useState(true)
 
   const previewHostRef = useRef<HTMLDivElement>(null)
+  const baselinePreviewHostRef = useRef<HTMLDivElement>(null)
   const textureHostRef = useRef<HTMLDivElement>(null)
   const previewRef = useRef<BitmapFontPreview | null>(null)
+  const baselinePreviewRef = useRef<BitmapFontPreview | null>(null)
   const textureRef = useRef<BitmapFontTextureView | null>(null)
   /** Incremented when the user starts a load that must win over the bundled example fetch. */
   const fontSessionEpochRef = useRef(0)
@@ -448,7 +457,7 @@ export default function ShoeboxBitmapFontEditor() {
   const hasXml = lastSavedXml != null
   const ready = hasXml && previewTextureUrls.length > 0 && previewTextureUrls.every((u) => !!u)
 
-  /** null = still measuring; Pixi preview only when true (atlas pixels must match &lt;common scaleW/scaleH&gt;). */
+  /** null = still measuring; preview only when true (atlas pixels must match &lt;common scaleW/scaleH&gt;). */
   const [atlasPixelMatchesCommon, setAtlasPixelMatchesCommon] = useState<boolean | null>(null)
 
   useEffect(() => {
@@ -491,7 +500,74 @@ export default function ShoeboxBitmapFontEditor() {
     }
   }, [ready, previewTextureUrls, model.common.scaleW, model.common.scaleH])
 
+  /** Loaded snapshot expects atlas pixels to match its `common.scaleW` / `scaleH` (can differ from the live model after edits). */
+  const [baselineAtlasPixelMatchesCommon, setBaselineAtlasPixelMatchesCommon] = useState<boolean | null>(null)
+
+  useEffect(() => {
+    if (!ready || previewTextureUrls.length === 0) {
+      queueMicrotask(() => setBaselineAtlasPixelMatchesCommon(null))
+      return
+    }
+    const urls = previewTextureUrls
+    const wantW = baselineModel.common.scaleW
+    const wantH = baselineModel.common.scaleH
+    let cancelled = false
+
+    const measure = (url: string) =>
+      new Promise<{ w: number; h: number }>((resolve, reject) => {
+        const img = new Image()
+        img.crossOrigin = 'anonymous'
+        img.onload = () => resolve({ w: img.naturalWidth, h: img.naturalHeight })
+        img.onerror = () => reject(new Error('atlas measure failed'))
+        img.src = url
+      })
+
+    ;(async () => {
+      try {
+        for (const url of urls) {
+          const { w, h } = await measure(url)
+          if (cancelled) return
+          if (w !== wantW || h !== wantH) {
+            setBaselineAtlasPixelMatchesCommon(false)
+            return
+          }
+        }
+        if (!cancelled) setBaselineAtlasPixelMatchesCommon(true)
+      } catch {
+        if (!cancelled) setBaselineAtlasPixelMatchesCommon(false)
+      }
+    })()
+
+    return () => {
+      cancelled = true
+    }
+  }, [ready, previewTextureUrls, baselineModel.common.scaleW, baselineModel.common.scaleH])
+
+  const baselinePreviewModel = useMemo(
+    () => setInfo(structuredClone(baselineModel), { face: SHOEBOX_PREVIEW_BASELINE_FACE }),
+    [baselineModel]
+  )
+
   const diagnostics = useMemo(() => bitmapFontDiagnostics(model), [model])
+
+  const sortedDiagnostics = useMemo(
+    () => [...diagnostics].sort((a, b) => diagnosticLevelRank(a.level) - diagnosticLevelRank(b.level)),
+    [diagnostics]
+  )
+
+  const diagnosticCounts = useMemo(() => {
+    let errors = 0
+    let warnings = 0
+    let infos = 0
+    for (const d of diagnostics) {
+      if (d.level === 'error') errors++
+      else if (d.level === 'warn') warnings++
+      else infos++
+    }
+    return { errors, warnings, infos }
+  }, [diagnostics])
+
+  const pixiPreviewHostBg = useMemo(() => (darkTheme ? '#0f172a' : '#ffffff'), [darkTheme])
 
   const charIdMap = useMemo(() => {
     const m = new Map<number, BitmapFontChar>()
@@ -521,6 +597,7 @@ export default function ShoeboxBitmapFontEditor() {
 
   const applyDiagnosticTarget = useCallback((t: BitmapFontDiagnosticTarget) => {
     if (t.kind === 'char') {
+      setSelectedCharId(t.id)
       void charTableRef.current?.scrollToCharId(t.id)
       return
     }
@@ -529,8 +606,6 @@ export default function ShoeboxBitmapFontEditor() {
       return
     }
     if (t.kind === 'kerning') {
-      setKernFirst(String.fromCodePoint(t.first))
-      setKernSecond(String.fromCodePoint(t.second))
       requestAnimationFrame(() => {
         kernEditorRef.current?.scrollToPair(t.first, t.second)
       })
@@ -969,8 +1044,7 @@ export default function ShoeboxBitmapFontEditor() {
 
   useEffect(() => {
     if (!hasXml || !previewHostRef.current) return
-    const bg = darkTheme ? 0x111827 : 0xf9fafb
-    const p = new BitmapFontPreview(previewHostRef.current, { width: 320, height: 180, background: bg })
+    const p = new BitmapFontPreview(previewHostRef.current, { width: 320, height: 180 })
     previewRef.current = p
     void p.init().then(() => {
       p.setShowBaseline(showBaseline)
@@ -980,8 +1054,31 @@ export default function ShoeboxBitmapFontEditor() {
       p.destroy()
       previewRef.current = null
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- (re)create when panel mounts; sync effect handles model/texture updates
-  }, [darkTheme, hasXml])
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- (re)create when XML appears; host stays mounted when toggling compare
+  }, [hasXml])
+
+  useEffect(() => {
+    if (!hasXml || baselineAtlasPixelMatchesCommon !== true || !baselinePreviewHostRef.current) {
+      const existing = baselinePreviewRef.current
+      if (existing) {
+        existing.destroy()
+        baselinePreviewRef.current = null
+      }
+      return
+    }
+    const host = baselinePreviewHostRef.current
+    const p = new BitmapFontPreview(host, { width: 320, height: 180 })
+    baselinePreviewRef.current = p
+    void p.init().then(() => {
+      p.setShowBaseline(showBaseline)
+      p.setShowAnchorCenterY(showAnchorCenterY)
+    })
+    return () => {
+      p.destroy()
+      baselinePreviewRef.current = null
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- baseline host mounts when atlas matches loaded snapshot; sync handles model
+  }, [hasXml, baselineAtlasPixelMatchesCommon])
 
   useEffect(() => {
     const p = previewRef.current
@@ -991,15 +1088,47 @@ export default function ShoeboxBitmapFontEditor() {
       return
     }
     if (atlasPixelMatchesCommon !== true) return
-    void p.sync(model, previewTextureUrls, previewText, serialized)
-  }, [previewText, serialized, previewTextureUrls, model, ready, atlasPixelMatchesCommon])
+    void p.sync(model, previewTextureUrls, previewText, serialized, {
+      maxWidth: 0,
+      align: 'left',
+    })
+    // `comparePixiToBaseline` kept so toggling compare still re-runs sync if needed; main Pixi host no longer remounts on toggle.
+  }, [previewText, serialized, previewTextureUrls, model, ready, atlasPixelMatchesCommon, comparePixiToBaseline])
+
+  useEffect(() => {
+    if (comparePixiToBaseline) return
+    baselinePreviewRef.current?.clearFontDisplay()
+  }, [comparePixiToBaseline])
+
+  useEffect(() => {
+    const p = baselinePreviewRef.current
+    if (!p || !ready || !comparePixiToBaseline) return
+    if (baselineAtlasPixelMatchesCommon === false) {
+      p.clearFontDisplay()
+      return
+    }
+    if (baselineAtlasPixelMatchesCommon !== true) return
+    void p.sync(baselinePreviewModel, previewTextureUrls, previewText, undefined, {
+      maxWidth: 0,
+      align: 'left',
+    })
+  }, [
+    previewText,
+    previewTextureUrls,
+    baselinePreviewModel,
+    ready,
+    comparePixiToBaseline,
+    baselineAtlasPixelMatchesCommon,
+  ])
 
   useEffect(() => {
     previewRef.current?.setShowBaseline(showBaseline)
+    baselinePreviewRef.current?.setShowBaseline(showBaseline)
   }, [showBaseline])
 
   useEffect(() => {
     previewRef.current?.setShowAnchorCenterY(showAnchorCenterY)
+    baselinePreviewRef.current?.setShowAnchorCenterY(showAnchorCenterY)
   }, [showAnchorCenterY])
 
   useEffect(() => {
@@ -1010,7 +1139,9 @@ export default function ShoeboxBitmapFontEditor() {
       selectedCharId,
       scaleW: model.common.scaleW,
       scaleH: model.common.scaleH,
+      globalXAdvance: globalXAdvanceValue(model.common),
       showOutlines,
+      showAdvanceOverlay,
       onRectDragEnd: (charId, rect) => {
         setModel((prev) => patchCharById(prev, charId, rect))
       },
@@ -1041,10 +1172,22 @@ export default function ShoeboxBitmapFontEditor() {
       selectedCharId,
       scaleW: model.common.scaleW,
       scaleH: model.common.scaleH,
+      globalXAdvance: globalXAdvanceValue(model.common),
       showOutlines,
+      showAdvanceOverlay,
       onGlyphClick: onAtlasGlyphClick,
     })
-  }, [charsOnActivePage, model.common.scaleW, model.common.scaleH, selectedCharId, showOutlines, onAtlasGlyphClick])
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- model.common fields listed explicitly (common object identity changes every render)
+  }, [
+    charsOnActivePage,
+    model.common.scaleW,
+    model.common.scaleH,
+    model.common.globalXAdvance,
+    selectedCharId,
+    showOutlines,
+    showAdvanceOverlay,
+    onAtlasGlyphClick,
+  ])
 
   useEffect(() => {
     if (!atlasGlyphPopover) return
@@ -1064,7 +1207,11 @@ export default function ShoeboxBitmapFontEditor() {
   }, [atlasGlyphPopover, closeAtlasGlyphPopover])
 
   useEffect(() => {
-    if (!hasXml) closeAtlasGlyphPopover()
+    if (hasXml) return
+    const id = requestAnimationFrame(() => {
+      closeAtlasGlyphPopover()
+    })
+    return () => cancelAnimationFrame(id)
   }, [hasXml, closeAtlasGlyphPopover])
 
   useEffect(() => {
@@ -1081,7 +1228,23 @@ export default function ShoeboxBitmapFontEditor() {
       },
       { minWidth: 80, minHeight: 80 }
     )
-  }, [hasXml])
+  }, [hasXml, comparePixiToBaseline])
+
+  useEffect(() => {
+    if (!hasXml || baselineAtlasPixelMatchesCommon !== true) return
+    const host = baselinePreviewHostRef.current
+    const p = baselinePreviewRef.current
+    if (!host || !p) return
+    const r = host.getBoundingClientRect()
+    p.resize(Math.max(80, r.width), Math.max(80, r.height))
+    return observeElementSize(
+      host,
+      (w, h) => {
+        p.resize(w, h)
+      },
+      { minWidth: 80, minHeight: 80 }
+    )
+  }, [hasXml, baselineAtlasPixelMatchesCommon, comparePixiToBaseline])
 
   const charCodeLabel = useCallback((code: number) => {
     try {
@@ -1196,42 +1359,6 @@ export default function ShoeboxBitmapFontEditor() {
       })
     },
     [setModel]
-  )
-
-  const runKerningEstimate = useCallback(
-    async (fontBuffer: ArrayBuffer) => {
-      const charset =
-        model.chars.length >= 2
-          ? [...new Set(model.chars.map((c) => String.fromCodePoint(c.id)))].join('')
-          : rasterCharset
-      setKernEstimateBusy(true)
-      setLoadError(null)
-      try {
-        const r = await estimateKerningsFromFontBuffer(fontBuffer, {
-          sizePx: model.info.size,
-          charset,
-          maxPairs: 8000,
-        })
-        if (!r.ok) {
-          setLoadError(r.error)
-          return
-        }
-        setModel((prev) => {
-          const map = new Map<string, (typeof prev.kernings)[number]>()
-          for (const k of prev.kernings) {
-            map.set(`${k.first}_${k.second}`, k)
-          }
-          for (const k of r.kernings) {
-            map.set(`${k.first}_${k.second}`, k)
-          }
-          return { ...prev, kernings: [...map.values()] }
-        })
-        setGeneratorNotes((n) => [...n, ...r.warnings])
-      } finally {
-        setKernEstimateBusy(false)
-      }
-    },
-    [model.chars, model.info.size, rasterCharset, setModel]
   )
 
   const autoCenterVerticalYoffset = useCallback(() => {
@@ -1357,9 +1484,9 @@ export default function ShoeboxBitmapFontEditor() {
       <div style={{ maxWidth: 1100, margin: '0 auto', ...cssVars }}>
         <header style={{ marginBottom: 20, display: 'flex', flexWrap: 'wrap', alignItems: 'flex-start', gap: 16 }}>
           <div style={{ flex: '1 1 220px', minWidth: 0 }}>
-            <h1 style={{ fontSize: 22, fontWeight: 700, margin: 0 }}>Pixi: Bitmap Font Toolkit</h1>
+            <h1 style={{ fontSize: 22, fontWeight: 700, margin: 0 }}>Bitmap Font Toolkit</h1>
             <p style={{ fontSize: 13, color: textMuted, margin: '6px 0 0', lineHeight: 1.45 }}>
-              BMFont multitool: edit XML + atlas, or generate from a styled charset PNG / a font file — all with live Pixi preview.
+              BMFont multitool: edit XML + atlas, or generate from a styled charset PNG / a font file — all with live preview.
             </p>
           </div>
           <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 12, marginLeft: 'auto' }}>
@@ -1494,60 +1621,75 @@ export default function ShoeboxBitmapFontEditor() {
             Choose an import path. <strong style={{ color: 'var(--shoebox-text)' }}>BMFont files</strong> is the original workflow; the other tabs add optional generators (nothing is uploaded to a server).
           </p>
           <div role="tablist" aria-label="Import source" style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 14 }}>
-            <button
-              type="button"
-              role="tab"
-              aria-selected={importSourceTab === 'bmfont'}
-              onClick={() => setImportSourceTabFromUi('bmfont')}
-              style={{
-                fontSize: 12,
-                fontWeight: 600,
-                padding: '6px 12px',
-                borderRadius: 8,
-                border: `1px solid ${inputBorder}`,
-                cursor: 'pointer',
-                background: importSourceTab === 'bmfont' ? '#0d9488' : darkTheme ? '#334155' : '#e5e7eb',
-                color: importSourceTab === 'bmfont' ? '#fff' : text,
-              }}
+            <WithTooltip
+              darkTheme={darkTheme}
+              tip="Upload existing BMFont XML / .fnt and atlas image — the original workflow (use Upload font files below)."
             >
-              BMFont files (default)
-            </button>
-            <button
-              type="button"
-              role="tab"
-              aria-selected={importSourceTab === 'styledStrip'}
-              onClick={() => setImportSourceTabFromUi('styledStrip')}
-              style={{
-                fontSize: 12,
-                fontWeight: 600,
-                padding: '6px 12px',
-                borderRadius: 8,
-                border: `1px solid ${inputBorder}`,
-                cursor: 'pointer',
-                background: importSourceTab === 'styledStrip' ? '#0d9488' : darkTheme ? '#334155' : '#e5e7eb',
-                color: importSourceTab === 'styledStrip' ? '#fff' : text,
-              }}
+              <button
+                type="button"
+                role="tab"
+                aria-selected={importSourceTab === 'bmfont'}
+                onClick={() => setImportSourceTabFromUi('bmfont')}
+                style={{
+                  fontSize: 12,
+                  fontWeight: 600,
+                  padding: '6px 12px',
+                  borderRadius: 8,
+                  border: `1px solid ${inputBorder}`,
+                  cursor: 'pointer',
+                  background: importSourceTab === 'bmfont' ? '#0d9488' : darkTheme ? '#334155' : '#e5e7eb',
+                  color: importSourceTab === 'bmfont' ? '#fff' : text,
+                }}
+              >
+                BMFont files (default)
+              </button>
+            </WithTooltip>
+            <WithTooltip
+              darkTheme={darkTheme}
+              tip="Build BMFont from one Shoebox-style strip image whose glyphs match your charset in reading order."
             >
-              Styled charset PNG
-            </button>
-            <button
-              type="button"
-              role="tab"
-              aria-selected={importSourceTab === 'rasterFont'}
-              onClick={() => setImportSourceTabFromUi('rasterFont')}
-              style={{
-                fontSize: 12,
-                fontWeight: 600,
-                padding: '6px 12px',
-                borderRadius: 8,
-                border: `1px solid ${inputBorder}`,
-                cursor: 'pointer',
-                background: importSourceTab === 'rasterFont' ? '#0d9488' : darkTheme ? '#334155' : '#e5e7eb',
-                color: importSourceTab === 'rasterFont' ? '#fff' : text,
-              }}
+              <button
+                type="button"
+                role="tab"
+                aria-selected={importSourceTab === 'styledStrip'}
+                onClick={() => setImportSourceTabFromUi('styledStrip')}
+                style={{
+                  fontSize: 12,
+                  fontWeight: 600,
+                  padding: '6px 12px',
+                  borderRadius: 8,
+                  border: `1px solid ${inputBorder}`,
+                  cursor: 'pointer',
+                  background: importSourceTab === 'styledStrip' ? '#0d9488' : darkTheme ? '#334155' : '#e5e7eb',
+                  color: importSourceTab === 'styledStrip' ? '#fff' : text,
+                }}
+              >
+                Styled charset PNG
+              </button>
+            </WithTooltip>
+            <WithTooltip
+              darkTheme={darkTheme}
+              tip="Rasterize a browser-loadable .ttf / .otf (or woff) into a new atlas + BMFont XML from your charset."
             >
-              Raster from font file
-            </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={importSourceTab === 'rasterFont'}
+                onClick={() => setImportSourceTabFromUi('rasterFont')}
+                style={{
+                  fontSize: 12,
+                  fontWeight: 600,
+                  padding: '6px 12px',
+                  borderRadius: 8,
+                  border: `1px solid ${inputBorder}`,
+                  cursor: 'pointer',
+                  background: importSourceTab === 'rasterFont' ? '#0d9488' : darkTheme ? '#334155' : '#e5e7eb',
+                  color: importSourceTab === 'rasterFont' ? '#fff' : text,
+                }}
+              >
+                Raster from font file
+              </button>
+            </WithTooltip>
           </div>
 
           {importSourceTab === 'styledStrip' && (
@@ -1566,143 +1708,194 @@ export default function ShoeboxBitmapFontEditor() {
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 10, marginBottom: 10 }}>
                 <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 12, color: textMuted }}>
                   face
-                  <input
-                    value={stripFace}
-                    onChange={(e) => setStripFace(e.target.value)}
-                    style={{
-                      padding: 6,
-                      background: inputBg,
-                      color: text,
-                      border: `1px solid ${inputBorder}`,
-                      borderRadius: 6,
-                      fontSize: 12,
-                    }}
-                  />
+                  <WithTooltip
+                    darkTheme={darkTheme}
+                    block
+                    tip="BMFont face string written to the built XML — Pixi BitmapText uses this as fontName."
+                  >
+                    <input
+                      value={stripFace}
+                      onChange={(e) => setStripFace(e.target.value)}
+                      style={{
+                        padding: 6,
+                        background: inputBg,
+                        color: text,
+                        border: `1px solid ${inputBorder}`,
+                        borderRadius: 6,
+                        fontSize: 12,
+                        width: '100%',
+                        boxSizing: 'border-box',
+                      }}
+                    />
+                  </WithTooltip>
                 </label>
                 <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 12, color: textMuted }}>
                   alpha threshold (0–255)
-                  <input
-                    type="number"
-                    min={0}
-                    max={255}
-                    value={stripAlpha}
-                    onChange={(e) => setStripAlpha(Number(e.target.value) || 0)}
-                    style={{
-                      padding: 6,
-                      background: inputBg,
-                      color: text,
-                      border: `1px solid ${inputBorder}`,
-                      borderRadius: 6,
-                      fontSize: 12,
-                    }}
-                  />
+                  <WithTooltip
+                    darkTheme={darkTheme}
+                    block
+                    tip="Pixels with alpha below this value are treated as background when detecting glyph bounding boxes."
+                  >
+                    <input
+                      type="number"
+                      min={0}
+                      max={255}
+                      value={stripAlpha}
+                      onChange={(e) => setStripAlpha(Number(e.target.value) || 0)}
+                      style={{
+                        padding: 6,
+                        background: inputBg,
+                        color: text,
+                        border: `1px solid ${inputBorder}`,
+                        borderRadius: 6,
+                        fontSize: 12,
+                        width: '100%',
+                        boxSizing: 'border-box',
+                      }}
+                    />
+                  </WithTooltip>
                 </label>
                 <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 12, color: textMuted }}>
                   min column gap (px)
-                  <input
-                    type="number"
-                    min={1}
-                    value={stripMinGap}
-                    onChange={(e) => setStripMinGap(Math.max(1, Number(e.target.value) || 1))}
-                    style={{
-                      padding: 6,
-                      background: inputBg,
-                      color: text,
-                      border: `1px solid ${inputBorder}`,
-                      borderRadius: 6,
-                      fontSize: 12,
-                    }}
-                  />
+                  <WithTooltip
+                    darkTheme={darkTheme}
+                    block
+                    tip="Minimum horizontal gap (pixels) between ink regions before starting a new glyph column."
+                  >
+                    <input
+                      type="number"
+                      min={1}
+                      value={stripMinGap}
+                      onChange={(e) => setStripMinGap(Math.max(1, Number(e.target.value) || 1))}
+                      style={{
+                        padding: 6,
+                        background: inputBg,
+                        color: text,
+                        border: `1px solid ${inputBorder}`,
+                        borderRadius: 6,
+                        fontSize: 12,
+                        width: '100%',
+                        boxSizing: 'border-box',
+                      }}
+                    />
+                  </WithTooltip>
                 </label>
                 <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 12, color: textMuted }}>
                   min row gap (px)
-                  <input
-                    type="number"
-                    min={1}
-                    value={stripMinRowGap}
-                    onChange={(e) => setStripMinRowGap(Math.max(1, Number(e.target.value) || 1))}
-                    style={{
-                      padding: 6,
-                      background: inputBg,
-                      color: text,
-                      border: `1px solid ${inputBorder}`,
-                      borderRadius: 6,
-                      fontSize: 12,
-                    }}
-                  />
+                  <WithTooltip
+                    darkTheme={darkTheme}
+                    block
+                    tip="Minimum vertical gap (pixels) between ink regions before treating glyphs as a new row."
+                  >
+                    <input
+                      type="number"
+                      min={1}
+                      value={stripMinRowGap}
+                      onChange={(e) => setStripMinRowGap(Math.max(1, Number(e.target.value) || 1))}
+                      style={{
+                        padding: 6,
+                        background: inputBg,
+                        color: text,
+                        border: `1px solid ${inputBorder}`,
+                        borderRadius: 6,
+                        fontSize: 12,
+                        width: '100%',
+                        boxSizing: 'border-box',
+                      }}
+                    />
+                  </WithTooltip>
                 </label>
                 <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 12, color: textMuted }}>
                   trim pad (px)
-                  <input
-                    type="number"
-                    min={0}
-                    value={stripTrimPad}
-                    onChange={(e) => setStripTrimPad(Math.max(0, Number(e.target.value) || 0))}
-                    style={{
-                      padding: 6,
-                      background: inputBg,
-                      color: text,
-                      border: `1px solid ${inputBorder}`,
-                      borderRadius: 6,
-                      fontSize: 12,
-                    }}
-                  />
+                  <WithTooltip
+                    darkTheme={darkTheme}
+                    block
+                    tip="Extra pixels added (or effectively inset) around each detected glyph box after bbox detection."
+                  >
+                    <input
+                      type="number"
+                      min={0}
+                      value={stripTrimPad}
+                      onChange={(e) => setStripTrimPad(Math.max(0, Number(e.target.value) || 0))}
+                      style={{
+                        padding: 6,
+                        background: inputBg,
+                        color: text,
+                        border: `1px solid ${inputBorder}`,
+                        borderRadius: 6,
+                        fontSize: 12,
+                        width: '100%',
+                        boxSizing: 'border-box',
+                      }}
+                    />
+                  </WithTooltip>
                 </label>
                 <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 12, color: textMuted }}>
                   space xadvance (px)
-                  <input
-                    type="number"
-                    min={1}
-                    value={stripSpaceAdvance}
-                    onChange={(e) => setStripSpaceAdvance(Math.max(1, Number(e.target.value) || 1))}
+                  <WithTooltip
+                    darkTheme={darkTheme}
+                    block
+                    tip="Horizontal advance for U+0020 space — space is synthetic (not sliced from the image)."
+                  >
+                    <input
+                      type="number"
+                      min={1}
+                      value={stripSpaceAdvance}
+                      onChange={(e) => setStripSpaceAdvance(Math.max(1, Number(e.target.value) || 1))}
+                      style={{
+                        padding: 6,
+                        background: inputBg,
+                        color: text,
+                        border: `1px solid ${inputBorder}`,
+                        borderRadius: 6,
+                        fontSize: 12,
+                        width: '100%',
+                        boxSizing: 'border-box',
+                      }}
+                    />
+                  </WithTooltip>
+                </label>
+              </div>
+              <label style={{ display: 'block', marginBottom: 10, cursor: 'pointer', userSelect: 'none' }}>
+                <WithTooltip
+                  darkTheme={darkTheme}
+                  block
+                  tip="When enabled, swaps comma vs period assignments if glyph ink shape disagrees with the charset order (U+002C / U+002E)."
+                >
+                  <span style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: textMuted }}>
+                    <input
+                      type="checkbox"
+                      checked={stripDotCommaDetect}
+                      onChange={(e) => setStripDotCommaDetect(e.target.checked)}
+                    />
+                    Detect comma vs period from ink (swap U+002C / U+002E when shape disagrees with charset)
+                  </span>
+                </WithTooltip>
+              </label>
+              <label style={{ display: 'flex', flexDirection: 'column', gap: 6, fontSize: 12, color: textMuted, marginBottom: 10 }}>
+                Charset (order matches image, code points; U+0020 is appended when missing so space uses space xadvance)
+                <WithTooltip
+                  darkTheme={darkTheme}
+                  block
+                  tip="Character sequence in reading order (left to right per row, rows top to bottom). Code points map to glyphs in the image; space is appended if missing."
+                >
+                  <textarea
+                    value={stripCharset}
+                    onChange={(e) => setStripCharset(e.target.value)}
+                    rows={2}
                     style={{
-                      padding: 6,
+                      padding: 8,
                       background: inputBg,
                       color: text,
                       border: `1px solid ${inputBorder}`,
                       borderRadius: 6,
+                      fontFamily: 'var(--font-geist-mono), monospace',
                       fontSize: 12,
+                      width: '100%',
+                      boxSizing: 'border-box',
                     }}
                   />
-                </label>
-              </div>
-              <label
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 8,
-                  fontSize: 12,
-                  color: textMuted,
-                  marginBottom: 10,
-                  cursor: 'pointer',
-                  userSelect: 'none',
-                }}
-              >
-                <input
-                  type="checkbox"
-                  checked={stripDotCommaDetect}
-                  onChange={(e) => setStripDotCommaDetect(e.target.checked)}
-                />
-                Detect comma vs period from ink (swap U+002C / U+002E when shape disagrees with charset)
-              </label>
-              <label style={{ display: 'flex', flexDirection: 'column', gap: 6, fontSize: 12, color: textMuted, marginBottom: 10 }}>
-                Charset (order matches image, code points; U+0020 is appended when missing so space uses space xadvance)
-                <textarea
-                  value={stripCharset}
-                  onChange={(e) => setStripCharset(e.target.value)}
-                  rows={2}
-                  style={{
-                    padding: 8,
-                    background: inputBg,
-                    color: text,
-                    border: `1px solid ${inputBorder}`,
-                    borderRadius: 6,
-                    fontFamily: 'var(--font-geist-mono), monospace',
-                    fontSize: 12,
-                    width: '100%',
-                    boxSizing: 'border-box',
-                  }}
-                />
+                </WithTooltip>
               </label>
               <WithTooltip darkTheme={darkTheme} tip="Requires the same PNG you uploaded for the atlas (see chip below).">
                 <button
@@ -1752,19 +1945,24 @@ export default function ShoeboxBitmapFontEditor() {
                       setRasterFontFile(f)
                     }}
                   />
-                  <span
-                    style={{
-                      fontSize: 12,
-                      fontWeight: 600,
-                      padding: '8px 14px',
-                      borderRadius: 8,
-                      background: '#6366f1',
-                      color: '#fff',
-                      display: 'inline-block',
-                    }}
+                  <WithTooltip
+                    darkTheme={darkTheme}
+                    tip="Pick a .ttf, .otf, or web font the browser can load via FontFace for canvas rasterization."
                   >
-                    Choose font file
-                  </span>
+                    <span
+                      style={{
+                        fontSize: 12,
+                        fontWeight: 600,
+                        padding: '8px 14px',
+                        borderRadius: 8,
+                        background: '#6366f1',
+                        color: '#fff',
+                        display: 'inline-block',
+                      }}
+                    >
+                      Choose font file
+                    </span>
+                  </WithTooltip>
                 </label>
                 {rasterFontFile && (
                   <span style={chipStyle} title={rasterFontFile.name}>
@@ -1775,132 +1973,189 @@ export default function ShoeboxBitmapFontEditor() {
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 10, marginBottom: 10 }}>
                 <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 12, color: textMuted }}>
                   size (px)
-                  <input
-                    type="number"
-                    min={1}
-                    value={rasterSize}
-                    onChange={(e) => setRasterSize(Math.max(1, Number(e.target.value) || 1))}
-                    style={{
-                      padding: 6,
-                      background: inputBg,
-                      color: text,
-                      border: `1px solid ${inputBorder}`,
-                      borderRadius: 6,
-                      fontSize: 12,
-                    }}
-                  />
+                  <WithTooltip
+                    darkTheme={darkTheme}
+                    block
+                    tip="Nominal pixel size used when drawing each glyph to the atlas (canvas font size)."
+                  >
+                    <input
+                      type="number"
+                      min={1}
+                      value={rasterSize}
+                      onChange={(e) => setRasterSize(Math.max(1, Number(e.target.value) || 1))}
+                      style={{
+                        padding: 6,
+                        background: inputBg,
+                        color: text,
+                        border: `1px solid ${inputBorder}`,
+                        borderRadius: 6,
+                        fontSize: 12,
+                        width: '100%',
+                        boxSizing: 'border-box',
+                      }}
+                    />
+                  </WithTooltip>
                 </label>
                 <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 12, color: textMuted }}>
                   fill color
-                  <input
-                    type="color"
-                    value={rasterColor.startsWith('#') && rasterColor.length >= 7 ? rasterColor : '#111827'}
-                    onChange={(e) => setRasterColor(e.target.value)}
-                    style={{ height: 32, width: '100%', border: `1px solid ${inputBorder}`, borderRadius: 6, padding: 2, boxSizing: 'border-box' }}
-                  />
+                  <WithTooltip darkTheme={darkTheme} block tip="Fill color behind glyphs when rasterizing (opaque cells on the generated atlas).">
+                    <input
+                      type="color"
+                      value={rasterColor.startsWith('#') && rasterColor.length >= 7 ? rasterColor : '#111827'}
+                      onChange={(e) => setRasterColor(e.target.value)}
+                      style={{
+                        height: 32,
+                        width: '100%',
+                        border: `1px solid ${inputBorder}`,
+                        borderRadius: 6,
+                        padding: 2,
+                        boxSizing: 'border-box',
+                      }}
+                    />
+                  </WithTooltip>
                 </label>
                 <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 12, color: textMuted }}>
                   atlas max width (px)
-                  <input
-                    type="number"
-                    min={32}
-                    value={rasterAtlasMaxW}
-                    onChange={(e) => setRasterAtlasMaxW(Math.max(32, Number(e.target.value) || 2048))}
-                    style={{
-                      padding: 6,
-                      background: inputBg,
-                      color: text,
-                      border: `1px solid ${inputBorder}`,
-                      borderRadius: 6,
-                      fontSize: 12,
-                    }}
-                  />
+                  <WithTooltip
+                    darkTheme={darkTheme}
+                    block
+                    tip="Maximum atlas image width before packing wraps to the next row of glyph cells."
+                  >
+                    <input
+                      type="number"
+                      min={32}
+                      value={rasterAtlasMaxW}
+                      onChange={(e) => setRasterAtlasMaxW(Math.max(32, Number(e.target.value) || 2048))}
+                      style={{
+                        padding: 6,
+                        background: inputBg,
+                        color: text,
+                        border: `1px solid ${inputBorder}`,
+                        borderRadius: 6,
+                        fontSize: 12,
+                        width: '100%',
+                        boxSizing: 'border-box',
+                      }}
+                    />
+                  </WithTooltip>
                 </label>
                 <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 12, color: textMuted }}>
                   cell padding (px)
-                  <input
-                    type="number"
-                    min={0}
-                    value={rasterPadding}
-                    onChange={(e) => setRasterPadding(Math.max(0, Number(e.target.value) || 0))}
-                    style={{
-                      padding: 6,
-                      background: inputBg,
-                      color: text,
-                      border: `1px solid ${inputBorder}`,
-                      borderRadius: 6,
-                      fontSize: 12,
-                    }}
-                  />
+                  <WithTooltip
+                    darkTheme={darkTheme}
+                    block
+                    tip="Extra transparent padding around each glyph cell in the packed atlas (pixels)."
+                  >
+                    <input
+                      type="number"
+                      min={0}
+                      value={rasterPadding}
+                      onChange={(e) => setRasterPadding(Math.max(0, Number(e.target.value) || 0))}
+                      style={{
+                        padding: 6,
+                        background: inputBg,
+                        color: text,
+                        border: `1px solid ${inputBorder}`,
+                        borderRadius: 6,
+                        fontSize: 12,
+                        width: '100%',
+                        boxSizing: 'border-box',
+                      }}
+                    />
+                  </WithTooltip>
                 </label>
                 <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 12, color: textMuted }}>
                   face
-                  <input
-                    value={rasterFace}
-                    onChange={(e) => setRasterFace(e.target.value)}
-                    style={{
-                      padding: 6,
-                      background: inputBg,
-                      color: text,
-                      border: `1px solid ${inputBorder}`,
-                      borderRadius: 6,
-                      fontSize: 12,
-                    }}
-                  />
+                  <WithTooltip
+                    darkTheme={darkTheme}
+                    block
+                    tip="BMFont face string written to generated XML — Pixi BitmapText uses this as fontName."
+                  >
+                    <input
+                      value={rasterFace}
+                      onChange={(e) => setRasterFace(e.target.value)}
+                      style={{
+                        padding: 6,
+                        background: inputBg,
+                        color: text,
+                        border: `1px solid ${inputBorder}`,
+                        borderRadius: 6,
+                        fontSize: 12,
+                        width: '100%',
+                        boxSizing: 'border-box',
+                      }}
+                    />
+                  </WithTooltip>
                 </label>
                 <label style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 12, color: textMuted }}>
                   page file name
-                  <input
-                    value={rasterPageFile}
-                    onChange={(e) => setRasterPageFile(e.target.value)}
-                    style={{
-                      padding: 6,
-                      background: inputBg,
-                      color: text,
-                      border: `1px solid ${inputBorder}`,
-                      borderRadius: 6,
-                      fontSize: 12,
-                    }}
-                  />
+                  <WithTooltip
+                    darkTheme={darkTheme}
+                    block
+                    tip="Value for &lt;page file=&quot;…&quot;&gt; in the generated XML — should match your runtime texture file name."
+                  >
+                    <input
+                      value={rasterPageFile}
+                      onChange={(e) => setRasterPageFile(e.target.value)}
+                      style={{
+                        padding: 6,
+                        background: inputBg,
+                        color: text,
+                        border: `1px solid ${inputBorder}`,
+                        borderRadius: 6,
+                        fontSize: 12,
+                        width: '100%',
+                        boxSizing: 'border-box',
+                      }}
+                    />
+                  </WithTooltip>
                 </label>
               </div>
               <label style={{ display: 'flex', flexDirection: 'column', gap: 6, fontSize: 12, color: textMuted, marginBottom: 10 }}>
                 Charset (unique glyphs; duplicates are skipped with a note)
-                <textarea
-                  value={rasterCharset}
-                  onChange={(e) => setRasterCharset(e.target.value)}
-                  rows={2}
-                  style={{
-                    padding: 8,
-                    background: inputBg,
-                    color: text,
-                    border: `1px solid ${inputBorder}`,
-                    borderRadius: 6,
-                    fontFamily: 'var(--font-geist-mono), monospace',
-                    fontSize: 12,
-                    width: '100%',
-                    boxSizing: 'border-box',
-                  }}
-                />
+                <WithTooltip
+                  darkTheme={darkTheme}
+                  block
+                  tip="Characters to rasterize from the font; duplicate code points are deduplicated (a note is shown when skipped)."
+                >
+                  <textarea
+                    value={rasterCharset}
+                    onChange={(e) => setRasterCharset(e.target.value)}
+                    rows={2}
+                    style={{
+                      padding: 8,
+                      background: inputBg,
+                      color: text,
+                      border: `1px solid ${inputBorder}`,
+                      borderRadius: 6,
+                      fontFamily: 'var(--font-geist-mono), monospace',
+                      fontSize: 12,
+                      width: '100%',
+                      boxSizing: 'border-box',
+                    }}
+                  />
+                </WithTooltip>
               </label>
-              <button
-                type="button"
-                disabled={rasterBusy}
-                onClick={() => void onRasterizeFont()}
-                style={{
-                  fontSize: 12,
-                  fontWeight: 600,
-                  padding: '8px 14px',
-                  cursor: rasterBusy ? 'wait' : 'pointer',
-                  opacity: rasterBusy ? 0.7 : 1,
-                  background: '#6366f1',
-                  color: '#fff',
-                  border: 'none',
-                  borderRadius: 8,
-                }}
-              >
-                {rasterBusy ? 'Rasterizing…' : 'Generate atlas + XML'}
-              </button>
+              <WithTooltip darkTheme={darkTheme} tip="Requires a chosen font file and charset — generates a new PNG atlas and BMFont XML in memory.">
+                <button
+                  type="button"
+                  disabled={rasterBusy}
+                  onClick={() => void onRasterizeFont()}
+                  style={{
+                    fontSize: 12,
+                    fontWeight: 600,
+                    padding: '8px 14px',
+                    cursor: rasterBusy ? 'wait' : 'pointer',
+                    opacity: rasterBusy ? 0.7 : 1,
+                    background: '#6366f1',
+                    color: '#fff',
+                    border: 'none',
+                    borderRadius: 8,
+                  }}
+                >
+                  {rasterBusy ? 'Rasterizing…' : 'Generate atlas + XML'}
+                </button>
+              </WithTooltip>
             </div>
           )}
 
@@ -2053,7 +2308,7 @@ export default function ShoeboxBitmapFontEditor() {
                 }}
               >
                 <label style={{ display: 'inline-flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
-                  <WithTooltip darkTheme={darkTheme} tip="Draw a red line at the first line’s baseline in the Pixi preview.">
+                  <WithTooltip darkTheme={darkTheme} tip="Draw a red line at the first line’s baseline in the preview.">
                     <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
                       <input type="checkbox" checked={showBaseline} onChange={(e) => setShowBaseline(e.target.checked)} />
                       Baseline
@@ -2076,6 +2331,32 @@ export default function ShoeboxBitmapFontEditor() {
                     <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
                       <input type="checkbox" checked={showOutlines} onChange={(e) => setShowOutlines(e.target.checked)} />
                       Glyph outlines
+                    </span>
+                  </WithTooltip>
+                </label>
+                <label style={{ display: 'inline-flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
+                  <WithTooltip
+                    darkTheme={darkTheme}
+                    tip="Under each glyph, draw a bar whose width matches exported xadvance (includes Global advance X). Helps compare rhythm to atlas boxes."
+                  >
+                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+                      <input type="checkbox" checked={showAdvanceOverlay} onChange={(e) => setShowAdvanceOverlay(e.target.checked)} />
+                      Advance bars
+                    </span>
+                  </WithTooltip>
+                </label>
+                <label style={{ display: 'inline-flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
+                  <WithTooltip
+                    darkTheme={darkTheme}
+                    tip="Show a second Pixi panel with the font as it was at the last import or generator output, next to your current edits. Uses the same preview text and atlas files."
+                  >
+                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+                      <input
+                        type="checkbox"
+                        checked={comparePixiToBaseline}
+                        onChange={(e) => setComparePixiToBaseline(e.target.checked)}
+                      />
+                      Compare to loaded
                     </span>
                   </WithTooltip>
                 </label>
@@ -2409,7 +2690,11 @@ export default function ShoeboxBitmapFontEditor() {
               <div
                 style={{
                   display: 'grid',
-                  gridTemplateColumns: stackPreviews ? '1fr' : '1fr 1fr',
+                  gridTemplateColumns: stackPreviews
+                    ? '1fr'
+                    : comparePixiToBaseline
+                      ? 'repeat(3, minmax(0, 1fr))'
+                      : '1fr 1fr',
                   gap: 12,
                 }}
               >
@@ -2490,6 +2775,107 @@ export default function ShoeboxBitmapFontEditor() {
                     />
                   </WithTooltip>
                 </div>
+                <div
+                  style={{
+                    display: comparePixiToBaseline ? 'flex' : 'none',
+                    flexDirection: 'column',
+                    minWidth: 0,
+                    gap: 6,
+                  }}
+                  aria-hidden={!comparePixiToBaseline}
+                >
+                  <div
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      gap: 8,
+                      minWidth: 0,
+                    }}
+                  >
+                    <WithTooltip darkTheme={darkTheme} tip="BitmapText from the last import or generator snapshot (same atlas files).">
+                      <div style={{ fontSize: 12, fontWeight: 600, color: textMuted }}>Loaded</div>
+                    </WithTooltip>
+                    <WithTooltip darkTheme={darkTheme} tip="Reset pan and zoom for the loaded snapshot panel.">
+                      <button
+                        type="button"
+                        disabled={baselineAtlasPixelMatchesCommon !== true}
+                        onClick={() => baselinePreviewRef.current?.resetPreviewView()}
+                        style={{
+                          fontSize: 11,
+                          fontWeight: 600,
+                          padding: '3px 8px',
+                          borderRadius: 6,
+                          border: `1px solid ${inputBorder}`,
+                          cursor: baselineAtlasPixelMatchesCommon !== true ? 'not-allowed' : 'pointer',
+                          background: darkTheme ? '#334155' : '#e5e7eb',
+                          color: text,
+                          flexShrink: 0,
+                          opacity: baselineAtlasPixelMatchesCommon !== true ? 0.55 : 1,
+                        }}
+                      >
+                        Center
+                      </button>
+                    </WithTooltip>
+                  </div>
+                  {baselineAtlasPixelMatchesCommon === true ? (
+                    <WithTooltip darkTheme={darkTheme} block tip="Last import or generator metrics at the time they were applied.">
+                      <div
+                        ref={baselinePreviewHostRef}
+                        style={{
+                          height: PREVIEW_HOST_HEIGHT,
+                          width: '100%',
+                          border: `1px solid ${panelBorder}`,
+                          borderRadius: 8,
+                          overflow: 'hidden',
+                          contain: 'strict',
+                          background: pixiPreviewHostBg,
+                        }}
+                      />
+                    </WithTooltip>
+                  ) : baselineAtlasPixelMatchesCommon === false ? (
+                    <div
+                      style={{
+                        height: PREVIEW_HOST_HEIGHT,
+                        width: '100%',
+                        border: `1px solid ${panelBorder}`,
+                        borderRadius: 8,
+                        overflow: 'auto',
+                        contain: 'strict',
+                        background: pixiPreviewHostBg,
+                        fontSize: 12,
+                        lineHeight: 1.5,
+                        color: textMuted,
+                        padding: 10,
+                        boxSizing: 'border-box',
+                      }}
+                    >
+                      Loaded snapshot expects atlas size{' '}
+                      <strong style={{ color: text }}>{baselineModel.common.scaleW}×{baselineModel.common.scaleH}</strong> px (from{' '}
+                      <code style={{ fontFamily: 'monospace', fontSize: 11 }}>&lt;common&gt;</code> at import). The uploaded image does not match, so this panel
+                      is hidden until the atlas matches that size or you reload font data.
+                    </div>
+                  ) : (
+                    <div
+                      style={{
+                        height: PREVIEW_HOST_HEIGHT,
+                        width: '100%',
+                        border: `1px solid ${panelBorder}`,
+                        borderRadius: 8,
+                        overflow: 'hidden',
+                        contain: 'strict',
+                        background: pixiPreviewHostBg,
+                        fontSize: 12,
+                        lineHeight: 1.5,
+                        color: textMuted,
+                        padding: 10,
+                        boxSizing: 'border-box',
+                      }}
+                    >
+                      Checking atlas for loaded snapshot…
+                    </div>
+                  )}
+                </div>
                 <div style={{ display: 'flex', flexDirection: 'column', minWidth: 0, gap: 6 }}>
                   <div
                     style={{
@@ -2500,8 +2886,17 @@ export default function ShoeboxBitmapFontEditor() {
                       minWidth: 0,
                     }}
                   >
-                    <WithTooltip darkTheme={darkTheme} tip="Live BitmapText using BitmapFont.install with your XML and atlas.">
-                      <div style={{ fontSize: 12, fontWeight: 600, color: textMuted }}>Pixi preview</div>
+                    <WithTooltip
+                      darkTheme={darkTheme}
+                      tip={
+                        comparePixiToBaseline
+                          ? 'Live BitmapText with your current XML and atlas.'
+                          : 'Live BitmapText using BitmapFont.install with your XML and atlas.'
+                      }
+                    >
+                      <div style={{ fontSize: 12, fontWeight: 600, color: textMuted }}>
+                        {comparePixiToBaseline ? 'Current' : 'Live preview'}
+                      </div>
                     </WithTooltip>
                     <WithTooltip darkTheme={darkTheme} tip="Reset pan and zoom so the preview text fits and is centered in the box.">
                       <button
@@ -2535,7 +2930,7 @@ export default function ShoeboxBitmapFontEditor() {
                         borderRadius: 8,
                         overflow: 'hidden',
                         contain: 'strict',
-                        background: 'var(--shoebox-canvas-bg)',
+                        background: pixiPreviewHostBg,
                       }}
                     />
                   </WithTooltip>
@@ -2626,51 +3021,6 @@ export default function ShoeboxBitmapFontEditor() {
                   inputBg={inputBg}
                 />
 
-                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'center' }}>
-                  <input
-                    ref={kernFontInputRef}
-                    type="file"
-                    accept=".ttf,.otf,font/ttf,font/otf"
-                    hidden
-                    onChange={async (e) => {
-                      const f = e.target.files?.[0]
-                      e.target.value = ''
-                      if (!f) return
-                      await runKerningEstimate(await f.arrayBuffer())
-                    }}
-                  />
-                  <WithTooltip
-                    darkTheme={darkTheme}
-                    block
-                    tip="Canvas-based pair widths vs single glyphs — heuristic, best on proportional Latin fonts. Uses glyphs in the character table (or the raster charset if fewer than two). Uses the .ttf/.otf from “Raster from font file” when set, otherwise prompts for a font file."
-                  >
-                    <button
-                      type="button"
-                      disabled={kernEstimateBusy}
-                      onClick={async () => {
-                        if (rasterFontFile) {
-                          await runKerningEstimate(await rasterFontFile.arrayBuffer())
-                        } else {
-                          kernFontInputRef.current?.click()
-                        }
-                      }}
-                      style={{
-                        fontSize: 12,
-                        fontWeight: 600,
-                        padding: '6px 12px',
-                        cursor: kernEstimateBusy ? 'wait' : 'pointer',
-                        opacity: kernEstimateBusy ? 0.65 : 1,
-                        background: darkTheme ? '#334155' : '#e5e7eb',
-                        color: text,
-                        border: `1px solid ${inputBorder}`,
-                        borderRadius: 8,
-                      }}
-                    >
-                      {kernEstimateBusy ? 'Estimating…' : 'Estimate kernings from font…'}
-                    </button>
-                  </WithTooltip>
-                </div>
-
                 <BitmapFontKerningEditor
                   ref={kernEditorRef}
                   kernings={model.kernings}
@@ -2678,10 +3028,6 @@ export default function ShoeboxBitmapFontEditor() {
                   onPatch={(i, p) => setModel((prev) => patchKerning(prev, i, p))}
                   onRemove={(i) => setModel((prev) => removeKerningAt(prev, i))}
                   onAdd={() => setModel((prev) => addKerning(prev, { first: 32, second: 32, amount: 0 }))}
-                  previewFirst={kernFirst}
-                  previewSecond={kernSecond}
-                  onPreviewFirst={setKernFirst}
-                  onPreviewSecond={setKernSecond}
                   charCodeLabel={charCodeLabel}
                   darkTheme={darkTheme}
                   text={text}
@@ -2724,47 +3070,55 @@ export default function ShoeboxBitmapFontEditor() {
                   aria-live="polite"
                   style={{ marginTop: 10, fontSize: 12, lineHeight: 1.45, color: text }}
                 >
-                  {diagnostics.length === 0 ? (
+                  {sortedDiagnostics.length === 0 ? (
                     <p style={{ margin: 0, color: textMuted }}>No issues.</p>
                   ) : (
-                    <ul style={{ margin: 0, paddingLeft: 0, listStyle: 'none' }}>
-                      {diagnostics.map((d, di) => (
-                        <li
-                          key={`${di}-${d.code}`}
-                          style={{
-                            marginBottom: 8,
-                            display: 'flex',
-                            flexWrap: 'wrap',
-                            alignItems: 'flex-start',
-                            gap: 8,
-                            color: d.level === 'error' ? '#dc2626' : d.level === 'warn' ? '#ca8a04' : textMuted,
-                          }}
-                        >
-                          <span style={{ flex: '1 1 200px', minWidth: 0 }}>
-                            <strong style={{ fontWeight: 600 }}>[{d.level}]</strong> {d.message}
-                          </span>
-                          {d.target && (
-                            <button
-                              type="button"
-                              onClick={() => applyDiagnosticTarget(d.target!)}
-                              style={{
-                                fontSize: 11,
-                                fontWeight: 600,
-                                padding: '4px 10px',
-                                cursor: 'pointer',
-                                borderRadius: 6,
-                                border: `1px solid ${inputBorder}`,
-                                background: darkTheme ? '#334155' : '#e5e7eb',
-                                color: text,
-                                flexShrink: 0,
-                              }}
-                            >
-                              Go
-                            </button>
-                          )}
-                        </li>
-                      ))}
-                    </ul>
+                    <>
+                      <p style={{ margin: '0 0 10px', fontSize: 12, color: textMuted }}>
+                        <strong style={{ color: text }}>Fix next:</strong> {diagnosticCounts.errors} error
+                        {diagnosticCounts.errors !== 1 ? 's' : ''}, {diagnosticCounts.warnings} warning
+                        {diagnosticCounts.warnings !== 1 ? 's' : ''},{' '}
+                        {diagnosticCounts.infos} info — highest severity first.
+                      </p>
+                      <ul style={{ margin: 0, paddingLeft: 0, listStyle: 'none' }}>
+                        {sortedDiagnostics.map((d, di) => (
+                          <li
+                            key={`diag-${di}`}
+                            style={{
+                              marginBottom: 8,
+                              display: 'flex',
+                              flexWrap: 'wrap',
+                              alignItems: 'flex-start',
+                              gap: 8,
+                              color: d.level === 'error' ? '#dc2626' : d.level === 'warn' ? '#ca8a04' : textMuted,
+                            }}
+                          >
+                            <span style={{ flex: '1 1 200px', minWidth: 0 }}>
+                              <strong style={{ fontWeight: 600 }}>[{d.level}]</strong> {d.message}
+                            </span>
+                            {d.target && (
+                              <button
+                                type="button"
+                                onClick={() => applyDiagnosticTarget(d.target!)}
+                                style={{
+                                  fontSize: 11,
+                                  fontWeight: 600,
+                                  padding: '4px 10px',
+                                  cursor: 'pointer',
+                                  borderRadius: 6,
+                                  border: `1px solid ${inputBorder}`,
+                                  background: darkTheme ? '#334155' : '#e5e7eb',
+                                  color: text,
+                                  flexShrink: 0,
+                                }}
+                              >
+                                Jump
+                              </button>
+                            )}
+                          </li>
+                        ))}
+                      </ul>
+                    </>
                   )}
                   {hasXml && (
                     <div

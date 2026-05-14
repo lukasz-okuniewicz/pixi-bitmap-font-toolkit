@@ -7,8 +7,12 @@ export type TextureViewOptions = {
   selectedCharId: number | null
   scaleW: number
   scaleH: number
+  /** Added to each glyph’s xadvance when drawing advance bars (matches exported BMFont). */
+  globalXAdvance?: number
   /** When false, hide glyph rectangles */
   showOutlines?: boolean
+  /** Draw horizontal bars under each glyph showing exported xadvance length (atlas pixels). */
+  showAdvanceOverlay?: boolean
   onRectDragEnd?: (charId: number, rect: Pick<BitmapFontChar, 'x' | 'y' | 'width' | 'height'>) => void
   /** Fired on mouseup after a glyph mousedown with pointer movement ≤ slop (client pixels). Does not fire with onRectDragEnd for the same gesture. */
   onGlyphClick?: (charId: number, clientX: number, clientY: number) => void
@@ -315,6 +319,24 @@ export class BitmapFontTextureView {
         ctx.strokeStyle = sel ? '#22c55e' : 'rgba(129, 140, 248, 0.85)'
         ctx.lineWidth = (sel ? 2 : 1) / this.scale
         ctx.strokeRect(ox + 0.5 / this.scale, oy + 0.5 / this.scale, c.width, c.height)
+      }
+    }
+
+    if (this.opts.showAdvanceOverlay) {
+      const gxa = typeof this.opts.globalXAdvance === 'number' && Number.isFinite(this.opts.globalXAdvance) ? this.opts.globalXAdvance : 0
+      for (const c of this.opts.chars) {
+        if (c.width <= 0 || c.height <= 0) continue
+        const ox = this.dragPos?.charId === c.id ? this.dragPos.x : c.x
+        const oy = this.dragPos?.charId === c.id ? this.dragPos.y : c.y
+        const adv = Math.max(0, (c.xadvance ?? 0) + gxa)
+        const barY = oy + c.height + Math.max(2, 3 / this.scale)
+        const barH = Math.max(2, 3 / this.scale)
+        const barW = Math.min(adv, Math.max(0, iw - ox))
+        ctx.fillStyle = 'rgba(34, 197, 94, 0.45)'
+        ctx.fillRect(ox, barY, barW, barH)
+        ctx.strokeStyle = 'rgba(22, 163, 74, 0.9)'
+        ctx.lineWidth = 1 / this.scale
+        ctx.strokeRect(ox + 0.5 / this.scale, barY + 0.5 / this.scale, barW, barH)
       }
     }
 

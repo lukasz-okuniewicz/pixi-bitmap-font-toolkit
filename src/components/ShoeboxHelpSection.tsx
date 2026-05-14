@@ -2,6 +2,8 @@
 
 import React from 'react'
 
+import { withBasePath } from '@/lib/withBasePath'
+
 type ShoeboxHelpSectionProps = {
   darkTheme: boolean
   text: string
@@ -21,8 +23,43 @@ const code: React.CSSProperties = {
 }
 
 export function ShoeboxHelpSection({ darkTheme, text, textMuted, inputBorder, panelBorder }: ShoeboxHelpSectionProps) {
+  const inspectTutorialMp4 = withBasePath('/inspect-modify.mp4')
+  const createFromPngMp4 = withBasePath('/create-from-png.mp4')
+
   const codeBg = darkTheme ? '#1e293b' : '#f3f4f6'
   const codeStyle = { ...code, background: codeBg, border: `1px solid ${inputBorder}` }
+
+  const figcaptionStyle: React.CSSProperties = {
+    fontSize: 13,
+    fontWeight: 600,
+    lineHeight: 1.45,
+    margin: '0 0 8px',
+    color: text,
+  }
+  const videoStyle: React.CSSProperties = {
+    width: '100%',
+    maxWidth: '100%',
+    height: 'auto',
+    display: 'block',
+    borderRadius: 8,
+    border: `1px solid ${panelBorder}`,
+    background: darkTheme ? '#0f172a' : '#f8fafc',
+  }
+  const figureVideoStyle: React.CSSProperties = { margin: '0 0 20px', padding: 0, width: '100%', minWidth: 0 }
+  const videoFallbackStyle: React.CSSProperties = {
+    display: 'block',
+    fontSize: 12,
+    lineHeight: 1.5,
+    margin: 0,
+    padding: '10px 12px',
+    color: textMuted,
+    borderTop: `1px solid ${inputBorder}`,
+  }
+  const linkStyle: React.CSSProperties = {
+    color: text,
+    textDecoration: 'underline',
+    textUnderlineOffset: 2,
+  }
 
   return (
     <section
@@ -42,9 +79,53 @@ export function ShoeboxHelpSection({ darkTheme, text, textMuted, inputBorder, pa
     >
       <h1 style={{ fontSize: 18, fontWeight: 700, margin: '0 0 12px' }}>Help</h1>
 
-      <h2 style={{ ...h2, marginTop: 0 }}>What this tool is</h2>
+      <h2 style={{ ...h2, marginTop: 0 }}>Video walkthroughs</h2>
+      <p style={{ ...p, color: textMuted, fontSize: 12, marginBottom: 14 }}>
+        Screen recordings hosted with the app (nothing leaves your machine when you watch them). If playback does not start, use the link under each player to
+        open the <code style={codeStyle}>.mp4</code> directly.
+      </p>
+      <figure style={figureVideoStyle}>
+        <figcaption style={figcaptionStyle}>Inspect and modify an existing bitmap font (BMFont XML + atlas)</figcaption>
+        <video
+          controls
+          playsInline
+          preload="metadata"
+          style={videoStyle}
+          src={inspectTutorialMp4}
+          aria-label="Screencast: inspect and modify an existing bitmap font"
+        >
+          <span style={videoFallbackStyle}>
+            This browser cannot play the embedded video.{' '}
+            <a href={inspectTutorialMp4} target="_blank" rel="noopener noreferrer" style={linkStyle}>
+              Open inspect-modify.mp4 in a new tab
+            </a>
+            .
+          </span>
+        </video>
+      </figure>
+      <figure style={figureVideoStyle}>
+        <figcaption style={figcaptionStyle}>Create new BMFont XML from a styled charset PNG</figcaption>
+        <video
+          controls
+          playsInline
+          preload="metadata"
+          style={videoStyle}
+          src={createFromPngMp4}
+          aria-label="Screencast: create BMFont XML from a PNG"
+        >
+          <span style={videoFallbackStyle}>
+            This browser cannot play the embedded video.{' '}
+            <a href={createFromPngMp4} target="_blank" rel="noopener noreferrer" style={linkStyle}>
+              Open create-from-png.mp4 in a new tab
+            </a>
+            .
+          </span>
+        </video>
+      </figure>
+
+      <h2 style={h2}>What this tool is</h2>
       <p style={p}>
-        <strong>Pixi: Bitmap Font Toolkit</strong> is a browser-based <strong>bitmap font multitool</strong> for the BMFont XML format. On each visit it loads a small{' '}
+        <strong>Bitmap Font Toolkit</strong> is a browser-based <strong>bitmap font multitool</strong> for the BMFont XML format. On each visit it loads a small{' '}
         <strong>bundled example</strong> BMFont (XML + PNG from the site) so you can explore the UI immediately; use <strong>Upload font files</strong> (or the
         other import tabs) to replace it for the current browser session. You can upload an existing <strong>font descriptor</strong> (XML or plain{' '}
         <code style={codeStyle}>.fnt</code>) plus an <strong>atlas image</strong> (usually PNG), <em>or</em> generate a starter descriptor from a{' '}
@@ -75,12 +156,8 @@ export function ShoeboxHelpSection({ darkTheme, text, textMuted, inputBorder, pa
         </li>
       </ul>
       <p style={p}>
-        The <strong>styled strip</strong> and <strong>raster</strong> generators do not embed kerning tables in the BMFont they build. After import, use the
-        kerning table for manual pairs, or run <strong>Estimate kernings from font…</strong> (under Kerning) with a <code style={codeStyle}>.ttf</code> /{' '}
-        <code style={codeStyle}>.otf</code>: the tool measures pairs in canvas using your current glyph set (or the raster charset when the font has fewer than
-        two glyphs), merges into existing pairs, and caps how many pairs it evaluates for responsiveness. That path is a <strong>heuristic</strong> (Latin-style
-        proportional fonts work best), not a full OpenType kerning extract. You can still tweak <strong>face</strong>, <strong>lineHeight</strong>, offsets, and
-        download XML as before.
+        The <strong>styled strip</strong> and <strong>raster</strong> generators do not embed kerning tables in the BMFont they build. After import, add
+        kerning pairs manually in the kerning table. You can still tweak <strong>face</strong>, <strong>lineHeight</strong>, offsets, and download XML as before.
       </p>
 
       <h2 style={h2}>Typical workflow</h2>
@@ -89,7 +166,7 @@ export function ShoeboxHelpSection({ darkTheme, text, textMuted, inputBorder, pa
           The editor opens with the bundled example font. Under <strong>BMFont files (default)</strong>, click <strong>Upload font files</strong> when you want
           your own XML or .fnt plus atlas (multi-select or one at a time). Refreshing the page restores the example.
         </li>
-        <li style={{ marginBottom: 6 }}>Confirm the texture and Pixi previews look correct.</li>
+        <li style={{ marginBottom: 6 }}>Confirm the texture and Live previews look correct.</li>
         <li style={{ marginBottom: 6 }}>Adjust global fields (<code style={codeStyle}>face</code>, <code style={codeStyle}>lineHeight</code>, etc.) and glyph rows as needed.</li>
         <li style={{ marginBottom: 6 }}>Use <strong>Download XML</strong> to save. Until you download, edits are only in memory (&quot;Unsaved edits&quot;).</li>
       </ol>
@@ -149,7 +226,7 @@ export function ShoeboxHelpSection({ darkTheme, text, textMuted, inputBorder, pa
           <strong>Session restore</strong> — The app may offer to restore a previous session from browser storage (includes your font data locally — treat as sensitive).
         </li>
         <li>
-          <strong>Baseline</strong> — Draws a red guide at an approximate first-line baseline in the Pixi preview (uses bounds + <code style={codeStyle}>
+          <strong>Baseline</strong> — Draws a red guide at an approximate first-line baseline in the Live preview (uses bounds + <code style={codeStyle}>
             lineHeight
           </code>
           ).
@@ -217,15 +294,19 @@ export function ShoeboxHelpSection({ darkTheme, text, textMuted, inputBorder, pa
       <h2 style={h2}>Kerning</h2>
       <p style={p}>
         Pairs <code style={codeStyle}>(first, second)</code> add extra horizontal spacing (can be negative) when <code style={codeStyle}>second</code> follows{' '}
-        <code style={codeStyle}>first</code> immediately. Use the small preview inputs to pick two characters and read the matching <strong>amount</strong> from
-        the table. <strong>Estimate kernings from font…</strong> runs a canvas-based heuristic (best on proportional Latin fonts); merge results are de-duplicated by pair.
+        <code style={codeStyle}>first</code> immediately. Edit <strong>first</strong>, <strong>second</strong>, and <strong>amount</strong> in the table.
       </p>
 
       <h2 style={h2}>Preview text &amp; Pixi panel</h2>
       <p style={p}>
-        <strong>Preview text</strong> drives the string in the <strong>Pixi preview</strong> (multi-line supported). Change it to stress-test punctuation,
+        <strong>Preview text</strong> drives the string in the <strong>Live preview</strong> (multi-line supported). Change it to stress-test punctuation,
         numbers, currency symbols, or languages you ship. The preview uses your live XML and atlas; when you edit the character table or kernings, the
         canvas updates on the next sync.
+      </p>
+      <p style={p}>
+        <strong>Compare to loaded</strong> (under Preview guides) shows a second Pixi panel with the font metrics from the last import or generator run next to
+        your current edits, using the same preview text and uploaded atlas. If the loaded snapshot expected a different atlas pixel size than your PNG, that
+        panel shows a short message instead of rendering.
       </p>
 
       <h2 style={h2}>Hover tooltips</h2>

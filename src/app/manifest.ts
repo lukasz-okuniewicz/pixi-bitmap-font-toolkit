@@ -5,9 +5,9 @@ export const dynamic = 'force-static'
 
 export default function manifest(): MetadataRoute.Manifest {
   return {
-    name: 'Pixi: Bitmap Font Toolkit',
+    name: 'Bitmap Font Toolkit',
     short_name: 'BMFont Toolkit',
-    description: 'Edit BMFont XML with a live Pixi preview in the browser.',
+    description: 'Edit BMFont XML with a live preview in the browser.',
     start_url: withBasePath('/'),
     display: 'standalone',
     background_color: '#111827',
