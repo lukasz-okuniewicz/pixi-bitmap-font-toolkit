@@ -21,11 +21,20 @@ export type ModelHistoryAction =
   | { type: 'set'; update: BitmapFontModel | ((prev: BitmapFontModel) => BitmapFontModel); recordHistory: boolean }
   | { type: 'undo' }
   | { type: 'redo' }
+  /** Replace entire history stack (e.g. switching workspace slot). */
+  | { type: 'hydrate'; state: ModelHistoryState }
 
 const MAX_PAST = 50
 
 export function modelHistoryReducer(state: ModelHistoryState, action: ModelHistoryAction): ModelHistoryState {
   switch (action.type) {
+    case 'hydrate': {
+      return {
+        model: cloneModel(action.state.model),
+        past: action.state.past.map(cloneModel),
+        future: action.state.future.map(cloneModel),
+      }
+    }
     case 'set': {
       const prev = state.model
       const next =

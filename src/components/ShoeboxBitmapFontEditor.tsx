@@ -42,9 +42,16 @@ import {
   clearBitmapFontSession,
   loadBitmapFontSession,
   saveBitmapFontSession,
-  type BitmapFontSessionRecordV1,
+  type BitmapFontSessionRecordV2,
 } from '@/lib/bitmapFont/bitmapFontSessionDb'
-import { initialModelHistoryState, modelHistoryReducer } from '@/lib/bitmapFont/modelHistoryReducer'
+import {
+  atlasBuffersToObjectUrls,
+  collectAtlasPageBuffers,
+  revokeObjectUrlRecord,
+} from '@/lib/bitmapFont/fontWorkspaceSlots'
+import type { WorkspaceSnapshotV2 } from '@/lib/bitmapFont/bitmapFontWorkspaceTypes'
+import { slotLabelFromMeta } from '@/lib/bitmapFont/bitmapFontWorkspaceTypes'
+import { initialModelHistoryState, modelHistoryReducer, type ModelHistoryState } from '@/lib/bitmapFont/modelHistoryReducer'
 import { rasterizeFontToModel } from '@/lib/bitmapFont/rasterizeFontToModel'
 import { withBasePath } from '@/lib/withBasePath'
 import { ScrubNumberInput } from '@/components/ScrubNumberInput'
@@ -155,6 +162,8 @@ const PREVIEW_HOST_HEIGHT = 'clamp(200px, 28vh, 360px)'
 
 /** Pixi `fontName` for the loaded-snapshot preview only — avoids clobbering `model.info.face` in the global BitmapFont registry. */
 const SHOEBOX_PREVIEW_BASELINE_FACE = '__shoebox_preview_baseline__'
+/** Distinct face for “compare to another open font” so it never collides with baseline preview registration. */
+const SHOEBOX_PREVIEW_COMPARE_OPEN_FACE = '__shoebox_preview_compare_open__'
 
 function diagnosticLevelRank(level: BitmapFontDiagnosticLevel): number {
   if (level === 'error') return 0
@@ -370,6 +379,10 @@ export default function ShoeboxBitmapFontEditor() {
   const [showAdvanceOverlay, setShowAdvanceOverlay] = useState(false)
   /** Side-by-side Pixi: loaded snapshot (`baselineModel`) vs current edits. */
   const [comparePixiToBaseline, setComparePixiToBaseline] = useState(false)
+  /** Mutually exclusive with `comparePixiToBaseline`: right panel shows another workspace slot’s snapshot. */
+  const [compareWithOpenSlotId, setCompareWithOpenSlotId] = useState<string | null>(null)
+  const compareOpenFontObjectUrlsRef = useRef<Record<number, string>>({})
+  const [compareOpenTextureUrlList, setCompareOpenTextureUrlList] = useState<string[]>([])
   const charTableRef = useRef<BitmapFontCharTableHandle>(null)
   const kernEditorRef = useRef<BitmapFontKerningEditorHandle>(null)
 
@@ -389,7 +402,64 @@ export default function ShoeboxBitmapFontEditor() {
   const [showHelp, setShowHelp] = useState(false)
   const [diagnosticsOpen, setDiagnosticsOpen] = useState(true)
   const [roundTripNote, setRoundTripNote] = useState<string | null>(null)
-  const [sessionOffer, setSessionOffer] = useState<BitmapFontSessionRecordV1 | null>(null)
+  const [sessionOffer, setSessionOffer] = useState<BitmapFontSessionRecordV2 | null>(null)
+
+  const newWorkspaceSlotId = useCallback(
+    () =>
+      typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+        ? crypto.randomUUID()
+        : `slot-${Date.now()}`,
+    []
+  )
+  const [activeSlotId, setActiveSlotId] = useState(() =>
+    typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function' ? crypto.randomUUID() : `slot-${Date.now()}`
+  )
+  const activeSlotIdRef = useRef(activeSlotId)
+  useLayoutEffect(() => {
+    activeSlotIdRef.current = activeSlotId
+  }, [activeSlotId])
+
+  const workspaceSlotsRef = useRef<WorkspaceSnapshotV2[]>([])
+  const [workspaceSlotsVersion, setWorkspaceSlotsVersion] = useState(0)
+  const bumpWorkspaceSlotsVersion = useCallback(() => {
+    setWorkspaceSlotsVersion((v) => v + 1)
+  }, [])
+
+  const fontImportArchiveOnceRef = useRef(false)
+
+  const histStateRef = useRef<ModelHistoryState>(initialModelHistoryState())
+  const baselineModelRef = useRef(structuredClone(initialModelHistoryState().model))
+  const indentRef = useRef(indent)
+  const exportFileNameRef = useRef(exportFileName)
+  const xmlFileNameRef = useRef(xmlFileName)
+  const pngFileNameRef = useRef(pngFileName)
+  const lastSavedXmlRef = useRef(lastSavedXml)
+  const activeAtlasPageIdRef = useRef(activeAtlasPageId)
+
+  useLayoutEffect(() => {
+    histStateRef.current = histState
+  }, [histState])
+  useLayoutEffect(() => {
+    baselineModelRef.current = baselineModel
+  }, [baselineModel])
+  useLayoutEffect(() => {
+    indentRef.current = indent
+  }, [indent])
+  useLayoutEffect(() => {
+    exportFileNameRef.current = exportFileName
+  }, [exportFileName])
+  useLayoutEffect(() => {
+    xmlFileNameRef.current = xmlFileName
+  }, [xmlFileName])
+  useLayoutEffect(() => {
+    pngFileNameRef.current = pngFileName
+  }, [pngFileName])
+  useLayoutEffect(() => {
+    lastSavedXmlRef.current = lastSavedXml
+  }, [lastSavedXml])
+  useLayoutEffect(() => {
+    activeAtlasPageIdRef.current = activeAtlasPageId
+  }, [activeAtlasPageId])
 
   const [importSourceTab, setImportSourceTab] = useState<ImportSourceTab>('bmfont')
 
@@ -446,6 +516,66 @@ export default function ShoeboxBitmapFontEditor() {
   const serialized = serializeBitmapFontXml(model, { indent })
   const serializedFnt = useMemo(() => serializeBitmapFontText(model), [model])
   const dirty = lastSavedXml != null && serialized !== lastSavedXml
+  const workspaceSlotsForSelect = useMemo(() => {
+    void workspaceSlotsVersion
+    return [...workspaceSlotsRef.current]
+  }, [workspaceSlotsVersion])
+
+  const revokeCompareOpenFontUrls = useCallback(() => {
+    revokeObjectUrlRecord(compareOpenFontObjectUrlsRef.current)
+    compareOpenFontObjectUrlsRef.current = {}
+    setCompareOpenTextureUrlList([])
+  }, [])
+
+  const compareOpenSlotSnapshot = useMemo((): WorkspaceSnapshotV2 | null => {
+    void workspaceSlotsVersion
+    if (!compareWithOpenSlotId) return null
+    return workspaceSlotsRef.current.find((s) => s.id === compareWithOpenSlotId) ?? null
+  }, [compareWithOpenSlotId, workspaceSlotsVersion])
+
+  const compareOpenLiveModel = compareOpenSlotSnapshot?.histState.model ?? null
+
+  const compareOpenPreviewModel = useMemo(() => {
+    if (!compareOpenLiveModel) return null
+    return setInfo(structuredClone(compareOpenLiveModel), { face: SHOEBOX_PREVIEW_COMPARE_OPEN_FACE })
+  }, [compareOpenLiveModel])
+
+  const compareOpenOtherSlots = useMemo(
+    () => workspaceSlotsForSelect.filter((s) => s.id !== activeSlotId),
+    [workspaceSlotsForSelect, activeSlotId]
+  )
+
+  const compareRightPanelVisible = comparePixiToBaseline || compareWithOpenSlotId != null
+
+  useEffect(() => {
+    if (workspaceSlotsForSelect.length <= 1 && compareWithOpenSlotId != null) {
+      setCompareWithOpenSlotId(null)
+    }
+  }, [workspaceSlotsForSelect.length, compareWithOpenSlotId])
+
+  useEffect(() => {
+    if (compareWithOpenSlotId && compareWithOpenSlotId === activeSlotId) {
+      setCompareWithOpenSlotId(null)
+    }
+  }, [compareWithOpenSlotId, activeSlotId])
+
+  useLayoutEffect(() => {
+    if (!compareWithOpenSlotId) {
+      revokeCompareOpenFontUrls()
+      return
+    }
+    const slot = workspaceSlotsRef.current.find((s) => s.id === compareWithOpenSlotId)
+    if (!slot || slot.atlasPages.length === 0 || slot.id === activeSlotId) {
+      revokeCompareOpenFontUrls()
+      return
+    }
+    revokeCompareOpenFontUrls()
+    const urlsRecord = atlasBuffersToObjectUrls(slot.atlasPages)
+    compareOpenFontObjectUrlsRef.current = urlsRecord
+    const sorted = [...slot.histState.model.pages].sort((a, b) => a.id - b.id)
+    setCompareOpenTextureUrlList(sorted.map((p) => urlsRecord[p.id] || ''))
+  }, [compareWithOpenSlotId, workspaceSlotsVersion, activeSlotId, revokeCompareOpenFontUrls])
+
   const texUrl = textureObjectUrl ?? ''
 
   const previewTextureUrls = useMemo(() => {
@@ -455,6 +585,10 @@ export default function ShoeboxBitmapFontEditor() {
   }, [model.pages, pageAtlasUrls, texUrl])
 
   const hasXml = lastSavedXml != null
+  const hasXmlRef = useRef(hasXml)
+  useLayoutEffect(() => {
+    hasXmlRef.current = hasXml
+  }, [hasXml])
   const ready = hasXml && previewTextureUrls.length > 0 && previewTextureUrls.every((u) => !!u)
 
   /** null = still measuring; preview only when true (atlas pixels must match &lt;common scaleW/scaleH&gt;). */
@@ -542,6 +676,65 @@ export default function ShoeboxBitmapFontEditor() {
       cancelled = true
     }
   }, [ready, previewTextureUrls, baselineModel.common.scaleW, baselineModel.common.scaleH])
+
+  const [compareOpenAtlasPixelMatchesCommon, setCompareOpenAtlasPixelMatchesCommon] = useState<boolean | null>(null)
+
+  useEffect(() => {
+    if (!compareWithOpenSlotId || !compareOpenLiveModel) {
+      queueMicrotask(() => setCompareOpenAtlasPixelMatchesCommon(null))
+      return
+    }
+    const sortedPages = [...compareOpenLiveModel.pages].sort((a, b) => a.id - b.id)
+    if (
+      compareOpenTextureUrlList.length === 0 ||
+      compareOpenTextureUrlList.length !== sortedPages.length ||
+      !compareOpenTextureUrlList.every((u) => !!u)
+    ) {
+      queueMicrotask(() => setCompareOpenAtlasPixelMatchesCommon(null))
+      return
+    }
+    const urls = compareOpenTextureUrlList
+    const wantW = compareOpenLiveModel.common.scaleW
+    const wantH = compareOpenLiveModel.common.scaleH
+    let cancelled = false
+
+    const measure = (url: string) =>
+      new Promise<{ w: number; h: number }>((resolve, reject) => {
+        const img = new Image()
+        img.crossOrigin = 'anonymous'
+        img.onload = () => resolve({ w: img.naturalWidth, h: img.naturalHeight })
+        img.onerror = () => reject(new Error('atlas measure failed'))
+        img.src = url
+      })
+
+    ;(async () => {
+      try {
+        for (const url of urls) {
+          const { w, h } = await measure(url)
+          if (cancelled) return
+          if (w !== wantW || h !== wantH) {
+            setCompareOpenAtlasPixelMatchesCommon(false)
+            return
+          }
+        }
+        if (!cancelled) setCompareOpenAtlasPixelMatchesCommon(true)
+      } catch {
+        if (!cancelled) setCompareOpenAtlasPixelMatchesCommon(false)
+      }
+    })()
+
+    return () => {
+      cancelled = true
+    }
+  }, [compareWithOpenSlotId, compareOpenLiveModel, compareOpenTextureUrlList])
+
+  const baselinePreviewMountAtlasOk =
+    compareWithOpenSlotId != null
+      ? compareOpenAtlasPixelMatchesCommon === true
+      : baselineAtlasPixelMatchesCommon === true
+
+  const rightCompareUsesOpenSlot = compareWithOpenSlotId != null
+  const rightCompareAtlasMatch = rightCompareUsesOpenSlot ? compareOpenAtlasPixelMatchesCommon : baselineAtlasPixelMatchesCommon
 
   const baselinePreviewModel = useMemo(
     () => setInfo(structuredClone(baselineModel), { face: SHOEBOX_PREVIEW_BASELINE_FACE }),
@@ -707,6 +900,97 @@ export default function ShoeboxBitmapFontEditor() {
     }
   }, [])
 
+  const buildSnapshotFromLive = useCallback(async (): Promise<WorkspaceSnapshotV2> => {
+    const hs = histStateRef.current
+    const m = hs.model
+    const atlasPages = await collectAtlasPageBuffers({
+      model: m,
+      pageAtlasUrls: pageAtlasUrlsRef.current,
+      atlasImageFile: atlasImageFileRef.current,
+    })
+    return {
+      id: activeSlotIdRef.current,
+      label: slotLabelFromMeta(xmlFileNameRef.current, exportFileNameRef.current, m),
+      histState: structuredClone(hs),
+      baselineModel: structuredClone(baselineModelRef.current),
+      indent: indentRef.current,
+      exportFileName: exportFileNameRef.current,
+      xmlFileName: xmlFileNameRef.current,
+      pngFileName: pngFileNameRef.current,
+      lastSavedXml: lastSavedXmlRef.current,
+      activeAtlasPageId: activeAtlasPageIdRef.current,
+      atlasPages,
+    }
+  }, [])
+
+  const mergeSnapshotIntoWorkspaceSlotsRef = useCallback((snap: WorkspaceSnapshotV2) => {
+    const arr = workspaceSlotsRef.current
+    const i = arr.findIndex((s) => s.id === snap.id)
+    if (i >= 0) arr[i] = snap
+    else arr.push(snap)
+  }, [])
+
+  const syncWorkspaceSlotFromLiveIntoRef = useCallback(async () => {
+    const snap = await buildSnapshotFromLive()
+    mergeSnapshotIntoWorkspaceSlotsRef(snap)
+  }, [buildSnapshotFromLive, mergeSnapshotIntoWorkspaceSlotsRef])
+
+  const archiveCurrentFontAndRotateSlotId = useCallback(async () => {
+    if (!hasXmlRef.current) return
+    await syncWorkspaceSlotFromLiveIntoRef()
+    revokeAllTextures()
+    setActiveSlotId(newWorkspaceSlotId())
+  }, [newWorkspaceSlotId, revokeAllTextures, syncWorkspaceSlotFromLiveIntoRef])
+
+  const applyWorkspaceSlotToEditor = useCallback(
+    (slot: WorkspaceSnapshotV2) => {
+      releaseRasterFont()
+      revokeAllTextures()
+      const urls = atlasBuffersToObjectUrls(slot.atlasPages)
+      pageAtlasUrlsRef.current = urls
+      setPageAtlasUrls(urls)
+      const sorted = [...slot.histState.model.pages].sort((a, b) => a.id - b.id)
+      const first = sorted[0]
+      const primary = first ? urls[first.id] ?? '' : ''
+      textureObjectUrlRef.current = primary || null
+      setTextureObjectUrl(primary || null)
+      setActiveAtlasPageId(slot.activeAtlasPageId)
+      atlasImageFileRef.current = null
+      histDispatch({ type: 'hydrate', state: structuredClone(slot.histState) })
+      setBaselineModel(structuredClone(slot.baselineModel))
+      setIndent(slot.indent)
+      setExportFileName(slot.exportFileName)
+      setXmlFileName(slot.xmlFileName)
+      setPngFileName(slot.pngFileName)
+      setLastSavedXml(
+        slot.lastSavedXml ?? serializeBitmapFontXml(slot.histState.model, { indent: slot.indent })
+      )
+      setSelectedCharId(null)
+      setLoadError(null)
+    },
+    [histDispatch, releaseRasterFont, revokeAllTextures]
+  )
+
+  const switchWorkspaceSlot = useCallback(
+    async (targetId: string) => {
+      if (targetId === activeSlotIdRef.current) return
+      revokeCompareOpenFontUrls()
+      setCompareWithOpenSlotId(null)
+      await syncWorkspaceSlotFromLiveIntoRef()
+      const slot = workspaceSlotsRef.current.find((s) => s.id === targetId)
+      if (!slot) return
+      applyWorkspaceSlotToEditor(slot)
+      setActiveSlotId(targetId)
+      bumpWorkspaceSlotsVersion()
+    },
+    [
+      applyWorkspaceSlotToEditor,
+      bumpWorkspaceSlotsVersion,
+      revokeCompareOpenFontUrls,
+      syncWorkspaceSlotFromLiveIntoRef,
+    ]
+  )
+
   const loadPngFromFile = useCallback(
     (f: File, primaryPageIdOverride?: number) => {
       atlasImageFileRef.current = f
@@ -750,12 +1034,18 @@ export default function ShoeboxBitmapFontEditor() {
 
   /** Try to parse BMFont from a file without throwing (for multi-select). */
   const tryLoadXmlFromFile = useCallback(
-    async (f: File): Promise<BitmapFontModel | null> => {
+    async (f: File, opts?: { archiveBeforeFullReplace?: boolean }): Promise<BitmapFontModel | null> => {
       try {
         const buf = await f.arrayBuffer()
         const u8 = new Uint8Array(buf)
         if (isBitmapFontBinaryMagic(u8)) {
           const m = parseBitmapFontBinary(u8)
+          if (opts?.archiveBeforeFullReplace) {
+            if (!fontImportArchiveOnceRef.current) {
+              fontImportArchiveOnceRef.current = true
+              await archiveCurrentFontAndRotateSlotId()
+            }
+          }
           const ind = '\t'
           setIndent(ind)
           setModel(m, false)
@@ -770,12 +1060,19 @@ export default function ShoeboxBitmapFontEditor() {
           return m
         }
         const textBody = new TextDecoder('utf-8', { fatal: false }).decode(u8)
+        if (!isBitmapFontXmlString(textBody).isBitmapFont) return null
+        if (opts?.archiveBeforeFullReplace) {
+          if (!fontImportArchiveOnceRef.current) {
+            fontImportArchiveOnceRef.current = true
+            await archiveCurrentFontAndRotateSlotId()
+          }
+        }
         return applyXmlString(textBody, f.name)
       } catch {
         return null
       }
     },
-    [applyXmlString, setModel]
+    [applyXmlString, archiveCurrentFontAndRotateSlotId, setModel]
   )
 
   const onPickFontFiles = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -783,6 +1080,7 @@ export default function ShoeboxBitmapFontEditor() {
     e.target.value = ''
     if (files.length === 0) return
 
+    fontImportArchiveOnceRef.current = false
     fontSessionEpochRef.current += 1
 
     const images = files.filter(isLikelyAtlasImageFile)
@@ -791,7 +1089,7 @@ export default function ShoeboxBitmapFontEditor() {
     let xmlOk = false
     let loadedModel: BitmapFontModel | null = null
     for (const f of textCandidates) {
-      const m = await tryLoadXmlFromFile(f)
+      const m = await tryLoadXmlFromFile(f, { archiveBeforeFullReplace: true })
       if (m) {
         loadedModel = m
         xmlOk = true
@@ -836,6 +1134,15 @@ export default function ShoeboxBitmapFontEditor() {
       setLoadError(null)
       setGeneratorNotes([])
     }
+
+    if (xmlOk) {
+      try {
+        await syncWorkspaceSlotFromLiveIntoRef()
+        bumpWorkspaceSlotsVersion()
+      } catch {
+        /* ignore */
+      }
+    }
   }
 
   useEffect(() => {
@@ -844,6 +1151,11 @@ export default function ShoeboxBitmapFontEditor() {
     let bootstrapTextureUrl: string | null = null
 
     const resetToEmptyFont = () => {
+      workspaceSlotsRef.current = []
+      setActiveSlotId(newWorkspaceSlotId())
+      setComparePixiToBaseline(false)
+      setCompareWithOpenSlotId(null)
+      revokeCompareOpenFontUrls()
       setModel(defaultBitmapFontModel(), false)
       setLastSavedXml(null)
       setXmlFileName(null)
@@ -909,7 +1221,7 @@ export default function ShoeboxBitmapFontEditor() {
         resetToEmptyFont()
       }
     }
-  }, [applyXmlString, loadPngFromFile, revokeAllTextures, setModel])
+  }, [applyXmlString, loadPngFromFile, newWorkspaceSlotId, revokeAllTextures, revokeCompareOpenFontUrls, setModel])
 
   const onBuildFromStyledStrip = useCallback(async () => {
     const f = atlasImageFileRef.current
@@ -943,6 +1255,7 @@ export default function ShoeboxBitmapFontEditor() {
         setGeneratorNotes(r.warnings)
         return
       }
+      await archiveCurrentFontAndRotateSlotId()
       const ind = '\t'
       const m: BitmapFontModel = {
         ...r.model,
@@ -959,12 +1272,36 @@ export default function ShoeboxBitmapFontEditor() {
       if (charsetForBuild !== stripCharset) {
         setStripCharset(charsetForBuild)
       }
+      const stripAtlas = atlasImageFileRef.current
+      if (stripAtlas) {
+        loadPngFromFile(stripAtlas, m.pages[0]?.id ?? 0)
+      }
+      try {
+        await syncWorkspaceSlotFromLiveIntoRef()
+        bumpWorkspaceSlotsVersion()
+      } catch {
+        /* ignore */
+      }
     } catch (err) {
       setLoadError(err instanceof Error ? err.message : String(err))
     } finally {
       setStripBusy(false)
     }
-  }, [stripCharset, stripFace, stripAlpha, stripMinGap, stripMinRowGap, stripTrimPad, stripSpaceAdvance, stripDotCommaDetect, setModel])
+  }, [
+    stripCharset,
+    stripFace,
+    stripAlpha,
+    stripMinGap,
+    stripMinRowGap,
+    stripTrimPad,
+    stripSpaceAdvance,
+    stripDotCommaDetect,
+    archiveCurrentFontAndRotateSlotId,
+    bumpWorkspaceSlotsVersion,
+    loadPngFromFile,
+    setModel,
+    syncWorkspaceSlotFromLiveIntoRef,
+  ])
 
   const onRasterizeFont = useCallback(async () => {
     if (!rasterFontFile) {
@@ -993,6 +1330,7 @@ export default function ShoeboxBitmapFontEditor() {
         setGeneratorNotes(r.warnings)
         return
       }
+      await archiveCurrentFontAndRotateSlotId()
       lastRasterFontFaceRef.current = r.fontFace
       revokeAllTextures()
       const url = URL.createObjectURL(r.pngBlob)
@@ -1015,6 +1353,12 @@ export default function ShoeboxBitmapFontEditor() {
       setExportFileName(`${xmlStem}.xml`)
       setGeneratorNotes(r.warnings)
       setSelectedCharId(null)
+      try {
+        await syncWorkspaceSlotFromLiveIntoRef()
+        bumpWorkspaceSlotsVersion()
+      } catch {
+        /* ignore */
+      }
     } catch (err) {
       releaseRasterFont()
       setLoadError(err instanceof Error ? err.message : String(err))
@@ -1030,17 +1374,21 @@ export default function ShoeboxBitmapFontEditor() {
     rasterPadding,
     rasterFace,
     rasterPageFile,
+    archiveCurrentFontAndRotateSlotId,
+    bumpWorkspaceSlotsVersion,
     releaseRasterFont,
     revokeAllTextures,
     setModel,
+    syncWorkspaceSlotFromLiveIntoRef,
   ])
 
   useEffect(() => {
     return () => {
       revokeAllTextures()
       releaseRasterFont()
+      revokeCompareOpenFontUrls()
     }
-  }, [releaseRasterFont, revokeAllTextures])
+  }, [releaseRasterFont, revokeAllTextures, revokeCompareOpenFontUrls])
 
   useEffect(() => {
     if (!hasXml || !previewHostRef.current) return
@@ -1058,7 +1406,7 @@ export default function ShoeboxBitmapFontEditor() {
   }, [hasXml])
 
   useEffect(() => {
-    if (!hasXml || baselineAtlasPixelMatchesCommon !== true || !baselinePreviewHostRef.current) {
+    if (!hasXml || baselinePreviewMountAtlasOk !== true || !baselinePreviewHostRef.current) {
       const existing = baselinePreviewRef.current
       if (existing) {
         existing.destroy()
@@ -1078,7 +1426,7 @@ export default function ShoeboxBitmapFontEditor() {
       baselinePreviewRef.current = null
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- baseline host mounts when atlas matches loaded snapshot; sync handles model
-  }, [hasXml, baselineAtlasPixelMatchesCommon])
+  }, [hasXml, baselinePreviewMountAtlasOk, compareWithOpenSlotId])
 
   useEffect(() => {
     const p = previewRef.current
@@ -1093,16 +1441,40 @@ export default function ShoeboxBitmapFontEditor() {
       align: 'left',
     })
     // `comparePixiToBaseline` kept so toggling compare still re-runs sync if needed; main Pixi host no longer remounts on toggle.
-  }, [previewText, serialized, previewTextureUrls, model, ready, atlasPixelMatchesCommon, comparePixiToBaseline])
+  }, [previewText, serialized, previewTextureUrls, model, ready, atlasPixelMatchesCommon, comparePixiToBaseline, compareWithOpenSlotId])
 
   useEffect(() => {
-    if (comparePixiToBaseline) return
+    if (comparePixiToBaseline || compareWithOpenSlotId) return
     baselinePreviewRef.current?.clearFontDisplay()
-  }, [comparePixiToBaseline])
+  }, [comparePixiToBaseline, compareWithOpenSlotId])
 
   useEffect(() => {
     const p = baselinePreviewRef.current
-    if (!p || !ready || !comparePixiToBaseline) return
+    if (!p || !ready) return
+
+    if (compareWithOpenSlotId) {
+      if (!compareOpenLiveModel || !compareOpenPreviewModel) {
+        p.clearFontDisplay()
+        return
+      }
+      const sortedLen = [...compareOpenLiveModel.pages].sort((a, b) => a.id - b.id).length
+      if (
+        compareOpenTextureUrlList.length !== sortedLen ||
+        !compareOpenTextureUrlList.every((u) => !!u) ||
+        compareOpenAtlasPixelMatchesCommon === false
+      ) {
+        p.clearFontDisplay()
+        return
+      }
+      if (compareOpenAtlasPixelMatchesCommon !== true) return
+      void p.sync(compareOpenPreviewModel, compareOpenTextureUrlList, previewText, undefined, {
+        maxWidth: 0,
+        align: 'left',
+      })
+      return
+    }
+
+    if (!comparePixiToBaseline) return
     if (baselineAtlasPixelMatchesCommon === false) {
       p.clearFontDisplay()
       return
@@ -1118,7 +1490,12 @@ export default function ShoeboxBitmapFontEditor() {
     baselinePreviewModel,
     ready,
     comparePixiToBaseline,
+    compareWithOpenSlotId,
     baselineAtlasPixelMatchesCommon,
+    compareOpenAtlasPixelMatchesCommon,
+    compareOpenLiveModel,
+    compareOpenPreviewModel,
+    compareOpenTextureUrlList,
   ])
 
   useEffect(() => {
@@ -1228,10 +1605,15 @@ export default function ShoeboxBitmapFontEditor() {
       },
       { minWidth: 80, minHeight: 80 }
     )
-  }, [hasXml, comparePixiToBaseline])
+  }, [hasXml, comparePixiToBaseline, compareWithOpenSlotId])
 
   useEffect(() => {
-    if (!hasXml || baselineAtlasPixelMatchesCommon !== true) return
+    if (!hasXml) return
+    const mountOk =
+      compareWithOpenSlotId != null
+        ? compareOpenAtlasPixelMatchesCommon === true
+        : baselineAtlasPixelMatchesCommon === true
+    if (!mountOk) return
     const host = baselinePreviewHostRef.current
     const p = baselinePreviewRef.current
     if (!host || !p) return
@@ -1244,7 +1626,13 @@ export default function ShoeboxBitmapFontEditor() {
       },
       { minWidth: 80, minHeight: 80 }
     )
-  }, [hasXml, baselineAtlasPixelMatchesCommon, comparePixiToBaseline])
+  }, [
+    hasXml,
+    baselineAtlasPixelMatchesCommon,
+    compareOpenAtlasPixelMatchesCommon,
+    compareWithOpenSlotId,
+    comparePixiToBaseline,
+  ])
 
   const charCodeLabel = useCallback((code: number) => {
     try {
@@ -1387,6 +1775,23 @@ export default function ShoeboxBitmapFontEditor() {
       })
   }, [])
 
+  useEffect(() => {
+    if (!hasXml || initialFontLoading) return
+    if (workspaceSlotsRef.current.length > 0) return
+    let cancelled = false
+    void (async () => {
+      try {
+        await syncWorkspaceSlotFromLiveIntoRef()
+        if (!cancelled) bumpWorkspaceSlotsVersion()
+      } catch {
+        /* ignore */
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [hasXml, initialFontLoading, bumpWorkspaceSlotsVersion, syncWorkspaceSlotFromLiveIntoRef])
+
   const idbSaveTimerRef = useRef(0)
   useEffect(() => {
     if (!hasXml || initialFontLoading) return
@@ -1394,23 +1799,20 @@ export default function ShoeboxBitmapFontEditor() {
     idbSaveTimerRef.current = window.setTimeout(() => {
       void (async () => {
         try {
-          let atlasBuffer: ArrayBuffer | null = null
-          const file = atlasImageFileRef.current
-          if (file) {
-            atlasBuffer = await file.arrayBuffer()
-          } else if (textureObjectUrl) {
-            const res = await fetch(textureObjectUrl)
-            atlasBuffer = await res.arrayBuffer()
-          }
+          await syncWorkspaceSlotFromLiveIntoRef()
           await saveBitmapFontSession({
-            version: 1,
+            version: 2,
             savedAt: Date.now(),
-            model: structuredClone(model),
-            indent,
-            exportFileName,
-            xmlFileName,
-            pngFileName,
-            atlasBuffer,
+            activeSlotId: activeSlotIdRef.current,
+            slots: workspaceSlotsRef.current.map((s) => ({
+              ...s,
+              histState: structuredClone(s.histState),
+              baselineModel: structuredClone(s.baselineModel),
+              atlasPages: s.atlasPages.map((p) => ({
+                pageId: p.pageId,
+                buffer: p.buffer.byteLength ? p.buffer.slice(0) : p.buffer,
+              })),
+            })),
           })
         } catch {
           /* ignore quota / private mode */
@@ -1418,7 +1820,24 @@ export default function ShoeboxBitmapFontEditor() {
       })()
     }, 1200)
     return () => window.clearTimeout(idbSaveTimerRef.current)
-  }, [model, indent, exportFileName, xmlFileName, pngFileName, textureObjectUrl, hasXml, initialFontLoading])
+  }, [
+    model,
+    histState.past,
+    histState.future,
+    indent,
+    exportFileName,
+    xmlFileName,
+    pngFileName,
+    textureObjectUrl,
+    pageAtlasUrls,
+    lastSavedXml,
+    baselineModel,
+    activeAtlasPageId,
+    hasXml,
+    initialFontLoading,
+    workspaceSlotsVersion,
+    syncWorkspaceSlotFromLiveIntoRef,
+  ])
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -1441,34 +1860,26 @@ export default function ShoeboxBitmapFontEditor() {
   }, [])
 
   const applySessionRestore = useCallback(
-    (rec: BitmapFontSessionRecordV1) => {
+    (rec: BitmapFontSessionRecordV2) => {
       fontSessionEpochRef.current += 1
-      revokeAllTextures()
-      if (rec.atlasBuffer && rec.atlasBuffer.byteLength > 0) {
-        const blob = new Blob([rec.atlasBuffer], { type: 'image/png' })
-        const url = URL.createObjectURL(blob)
-        const pid = rec.model.pages[0]?.id ?? 0
-        pageAtlasUrlsRef.current = { [pid]: url }
-        setPageAtlasUrls({ [pid]: url })
-        textureObjectUrlRef.current = url
-        setTextureObjectUrl(url)
-        setActiveAtlasPageId(pid)
-      } else {
-        setTextureObjectUrl(null)
-        textureObjectUrlRef.current = null
-      }
-      atlasImageFileRef.current = null
-      setModel(rec.model, false)
-      setIndent(rec.indent)
-      setExportFileName(rec.exportFileName)
-      setXmlFileName(rec.xmlFileName)
-      setPngFileName(rec.pngFileName)
-      setLastSavedXml(serializeBitmapFontXml(rec.model, { indent: rec.indent }))
-      setSelectedCharId(null)
-      setLoadError(null)
+      fontImportArchiveOnceRef.current = false
+      revokeCompareOpenFontUrls()
+      setCompareWithOpenSlotId(null)
+      setComparePixiToBaseline(false)
+      workspaceSlotsRef.current = rec.slots.map((s) => ({
+        ...s,
+        histState: structuredClone(s.histState),
+        baselineModel: structuredClone(s.baselineModel),
+        atlasPages: s.atlasPages.map((p) => ({ pageId: p.pageId, buffer: p.buffer.slice(0) })),
+      }))
+      const slot = workspaceSlotsRef.current.find((s) => s.id === rec.activeSlotId) ?? workspaceSlotsRef.current[0]
+      if (!slot) return
+      setActiveSlotId(slot.id)
+      applyWorkspaceSlotToEditor(slot)
       setSessionOffer(null)
+      bumpWorkspaceSlotsVersion()
     },
-    [revokeAllTextures, setModel]
+    [applyWorkspaceSlotToEditor, bumpWorkspaceSlotsVersion, revokeCompareOpenFontUrls]
   )
 
   return (
@@ -1538,8 +1949,9 @@ export default function ShoeboxBitmapFontEditor() {
               lineHeight: 1.5,
             }}
           >
-            <strong>Previous session found</strong> (saved locally in this browser; may include font assets). Restore it,
-            dismiss this offer, or clear stored data.
+            <strong>Previous session found</strong> ({sessionOffer.slots.length} font
+            {sessionOffer.slots.length === 1 ? '' : 's'}). Saved locally in this browser; may include font assets. Restore
+            it, dismiss this offer, or clear stored data.
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 10 }}>
               <button
                 type="button"
@@ -1584,6 +1996,11 @@ export default function ShoeboxBitmapFontEditor() {
                 type="button"
                 onClick={() => {
                   void clearBitmapFontSession()
+                  workspaceSlotsRef.current = []
+                  setActiveSlotId(newWorkspaceSlotId())
+                  revokeCompareOpenFontUrls()
+                  setCompareWithOpenSlotId(null)
+                  setComparePixiToBaseline(false)
                   setSessionOffer(null)
                 }}
                 style={{
@@ -1620,6 +2037,41 @@ export default function ShoeboxBitmapFontEditor() {
           <p style={{ fontSize: 13, color: textMuted, margin: '0 0 12px', lineHeight: 1.55 }}>
             Choose an import path. <strong style={{ color: 'var(--shoebox-text)' }}>BMFont files</strong> is the original workflow; the other tabs add optional generators (nothing is uploaded to a server).
           </p>
+          {workspaceSlotsForSelect.length > 1 && (
+            <div style={{ marginBottom: 14, display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 10 }}>
+              <label style={{ fontSize: 12, color: textMuted, display: 'flex', alignItems: 'center', gap: 8 }}>
+                Open fonts
+                <select
+                  value={activeSlotId}
+                  onChange={(e) => void switchWorkspaceSlot(e.target.value)}
+                  style={{
+                    fontSize: 12,
+                    padding: '6px 10px',
+                    borderRadius: 6,
+                    border: `1px solid ${inputBorder}`,
+                    background: inputBg,
+                    color: text,
+                    minWidth: 180,
+                    maxWidth: '100%',
+                  }}
+                >
+                  {workspaceSlotsForSelect.map((s) => {
+                    const slotDirty =
+                      s.id === activeSlotId
+                        ? dirty
+                        : s.lastSavedXml != null &&
+                          serializeBitmapFontXml(s.histState.model, { indent: s.indent }) !== s.lastSavedXml
+                    return (
+                      <option key={s.id} value={s.id}>
+                        {s.label}
+                        {slotDirty ? ' *' : ''}
+                      </option>
+                    )
+                  })}
+                </select>
+              </label>
+            </div>
+          )}
           <div role="tablist" aria-label="Import source" style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 14 }}>
             <WithTooltip
               darkTheme={darkTheme}
@@ -2362,12 +2814,69 @@ export default function ShoeboxBitmapFontEditor() {
                       <input
                         type="checkbox"
                         checked={comparePixiToBaseline}
-                        onChange={(e) => setComparePixiToBaseline(e.target.checked)}
+                        onChange={(e) => {
+                          const on = e.target.checked
+                          setComparePixiToBaseline(on)
+                          if (on) setCompareWithOpenSlotId(null)
+                        }}
                       />
                       Compare to loaded
                     </span>
                   </WithTooltip>
                 </label>
+                {workspaceSlotsForSelect.length > 1 && compareOpenOtherSlots.length > 0 && (
+                  <label style={{ display: 'flex', flexDirection: 'column', gap: 6, maxWidth: 420, cursor: 'default' }}>
+                    <WithTooltip
+                      darkTheme={darkTheme}
+                      tip="Second Pixi panel uses another font from Open fonts. Same preview text; that font’s atlas and XML are the last stored snapshot for that slot (updated when you switch away from it or on autosave), not live edits while it is in the background."
+                    >
+                      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                        <input
+                          type="checkbox"
+                          checked={compareWithOpenSlotId != null}
+                          onChange={(e) => {
+                            if (e.target.checked) {
+                              setComparePixiToBaseline(false)
+                              setCompareWithOpenSlotId(compareOpenOtherSlots[0]!.id)
+                            } else {
+                              setCompareWithOpenSlotId(null)
+                            }
+                          }}
+                        />
+                        Compare with another open font
+                      </span>
+                    </WithTooltip>
+                    <select
+                      aria-label="Open font to compare in side panel"
+                      disabled={compareWithOpenSlotId == null}
+                      value={compareWithOpenSlotId ?? ''}
+                      onChange={(e) => {
+                        const v = e.target.value
+                        if (!v) {
+                          setCompareWithOpenSlotId(null)
+                          return
+                        }
+                        setComparePixiToBaseline(false)
+                        setCompareWithOpenSlotId(v)
+                      }}
+                      style={{
+                        fontSize: 12,
+                        padding: '6px 10px',
+                        borderRadius: 6,
+                        border: `1px solid ${inputBorder}`,
+                        background: inputBg,
+                        color: text,
+                        maxWidth: '100%',
+                      }}
+                    >
+                      {compareOpenOtherSlots.map((s) => (
+                        <option key={s.id} value={s.id}>
+                          {s.label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                )}
                 <WithTooltip
                   darkTheme={darkTheme}
                   tip="Add the same yoffset to every glyph so the preview string’s bounding box is vertically centered on the Anchor Y line. Uses the current preview text; click again if needed after edits."
@@ -2700,7 +3209,7 @@ export default function ShoeboxBitmapFontEditor() {
                   display: 'grid',
                   gridTemplateColumns: stackPreviews
                     ? '1fr'
-                    : comparePixiToBaseline
+                    : compareRightPanelVisible
                       ? 'repeat(3, minmax(0, 1fr))'
                       : '1fr 1fr',
                   gap: 12,
@@ -2785,12 +3294,12 @@ export default function ShoeboxBitmapFontEditor() {
                 </div>
                 <div
                   style={{
-                    display: comparePixiToBaseline ? 'flex' : 'none',
+                    display: compareRightPanelVisible ? 'flex' : 'none',
                     flexDirection: 'column',
                     minWidth: 0,
                     gap: 6,
                   }}
-                  aria-hidden={!comparePixiToBaseline}
+                  aria-hidden={!compareRightPanelVisible}
                 >
                   <div
                     style={{
@@ -2801,13 +3310,31 @@ export default function ShoeboxBitmapFontEditor() {
                       minWidth: 0,
                     }}
                   >
-                    <WithTooltip darkTheme={darkTheme} tip="BitmapText from the last import or generator snapshot (same atlas files).">
-                      <div style={{ fontSize: 12, fontWeight: 600, color: textMuted }}>Loaded</div>
+                    <WithTooltip
+                      darkTheme={darkTheme}
+                      tip={
+                        rightCompareUsesOpenSlot
+                          ? `BitmapText from open font “${compareOpenSlotSnapshot?.label ?? ''}” (last stored snapshot for that slot).`
+                          : 'BitmapText from the last import or generator snapshot (same atlas files).'
+                      }
+                    >
+                      <div style={{ fontSize: 12, fontWeight: 600, color: textMuted }}>
+                        {rightCompareUsesOpenSlot
+                          ? `Other: ${compareOpenSlotSnapshot?.label ?? 'font'}`
+                          : 'Loaded'}
+                      </div>
                     </WithTooltip>
-                    <WithTooltip darkTheme={darkTheme} tip="Reset pan and zoom for the loaded snapshot panel.">
+                    <WithTooltip
+                      darkTheme={darkTheme}
+                      tip={
+                        rightCompareUsesOpenSlot
+                          ? 'Reset pan and zoom for the other open font panel.'
+                          : 'Reset pan and zoom for the loaded snapshot panel.'
+                      }
+                    >
                       <button
                         type="button"
-                        disabled={baselineAtlasPixelMatchesCommon !== true}
+                        disabled={rightCompareAtlasMatch !== true}
                         onClick={() => baselinePreviewRef.current?.resetPreviewView()}
                         style={{
                           fontSize: 11,
@@ -2815,19 +3342,27 @@ export default function ShoeboxBitmapFontEditor() {
                           padding: '3px 8px',
                           borderRadius: 6,
                           border: `1px solid ${inputBorder}`,
-                          cursor: baselineAtlasPixelMatchesCommon !== true ? 'not-allowed' : 'pointer',
+                          cursor: rightCompareAtlasMatch !== true ? 'not-allowed' : 'pointer',
                           background: darkTheme ? '#334155' : '#e5e7eb',
                           color: text,
                           flexShrink: 0,
-                          opacity: baselineAtlasPixelMatchesCommon !== true ? 0.55 : 1,
+                          opacity: rightCompareAtlasMatch !== true ? 0.55 : 1,
                         }}
                       >
                         Center
                       </button>
                     </WithTooltip>
                   </div>
-                  {baselineAtlasPixelMatchesCommon === true ? (
-                    <WithTooltip darkTheme={darkTheme} block tip="Last import or generator metrics at the time they were applied.">
+                  {rightCompareAtlasMatch === true ? (
+                    <WithTooltip
+                      darkTheme={darkTheme}
+                      block
+                      tip={
+                        rightCompareUsesOpenSlot
+                          ? 'Metrics and atlas from the selected open font’s stored snapshot.'
+                          : 'Last import or generator metrics at the time they were applied.'
+                      }
+                    >
                       <div
                         ref={baselinePreviewHostRef}
                         style={{
@@ -2841,7 +3376,7 @@ export default function ShoeboxBitmapFontEditor() {
                         }}
                       />
                     </WithTooltip>
-                  ) : baselineAtlasPixelMatchesCommon === false ? (
+                  ) : rightCompareAtlasMatch === false ? (
                     <div
                       style={{
                         height: PREVIEW_HOST_HEIGHT,
@@ -2858,10 +3393,24 @@ export default function ShoeboxBitmapFontEditor() {
                         boxSizing: 'border-box',
                       }}
                     >
-                      Loaded snapshot expects atlas size{' '}
-                      <strong style={{ color: text }}>{baselineModel.common.scaleW}×{baselineModel.common.scaleH}</strong> px (from{' '}
-                      <code style={{ fontFamily: 'monospace', fontSize: 11 }}>&lt;common&gt;</code> at import). The uploaded image does not match, so this panel
-                      is hidden until the atlas matches that size or you reload font data.
+                      {rightCompareUsesOpenSlot ? (
+                        <>
+                          Open font snapshot expects atlas size{' '}
+                          <strong style={{ color: text }}>
+                            {compareOpenLiveModel?.common.scaleW ?? 0}×{compareOpenLiveModel?.common.scaleH ?? 0}
+                          </strong>{' '}
+                          px (from <code style={{ fontFamily: 'monospace', fontSize: 11 }}>&lt;common&gt;</code>). The stored
+                          images do not match, so this panel stays empty until sizes align or you reload that font.
+                        </>
+                      ) : (
+                        <>
+                          Loaded snapshot expects atlas size{' '}
+                          <strong style={{ color: text }}>{baselineModel.common.scaleW}×{baselineModel.common.scaleH}</strong> px
+                          (from <code style={{ fontFamily: 'monospace', fontSize: 11 }}>&lt;common&gt;</code> at import). The
+                          uploaded image does not match, so this panel is hidden until the atlas matches that size or you reload
+                          font data.
+                        </>
+                      )}
                     </div>
                   ) : (
                     <div
@@ -2880,7 +3429,7 @@ export default function ShoeboxBitmapFontEditor() {
                         boxSizing: 'border-box',
                       }}
                     >
-                      Checking atlas for loaded snapshot…
+                      {rightCompareUsesOpenSlot ? 'Checking atlas for other open font…' : 'Checking atlas for loaded snapshot…'}
                     </div>
                   )}
                 </div>
@@ -2897,13 +3446,13 @@ export default function ShoeboxBitmapFontEditor() {
                     <WithTooltip
                       darkTheme={darkTheme}
                       tip={
-                        comparePixiToBaseline
+                        compareRightPanelVisible
                           ? 'Live BitmapText with your current XML and atlas.'
                           : 'Live BitmapText using BitmapFont.install with your XML and atlas.'
                       }
                     >
                       <div style={{ fontSize: 12, fontWeight: 600, color: textMuted }}>
-                        {comparePixiToBaseline ? 'Current' : 'Live preview'}
+                        {compareRightPanelVisible ? 'Current' : 'Live preview'}
                       </div>
                     </WithTooltip>
                     <WithTooltip darkTheme={darkTheme} tip="Reset pan and zoom so the preview text fits and is centered in the box.">

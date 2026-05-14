@@ -344,9 +344,9 @@ export class BitmapFontPreview {
       if (!textures || this.destroyed || gen !== this.syncGeneration) return
       this.runSync(model, textures, previewText, xmlOverride, PIXI, app, textLayout)
     } catch (e) {
-      if (!this.destroyed) {
-        console.error('[BitmapFontPreview] sync failed', e)
-      }
+      /** Blob URLs may be revoked while a prior `sync()` is still loading; ignore stale failures. */
+      if (this.destroyed || gen !== this.syncGeneration) return
+      console.error('[BitmapFontPreview] sync failed', e)
     }
   }
 
@@ -361,7 +361,10 @@ export class BitmapFontPreview {
 
   private async loadTextureFromUrl(PIXI: PixiNs, url: string): Promise<PixiTexture> {
     const img = new Image()
-    img.crossOrigin = 'anonymous'
+    // `crossOrigin` on blob/data URLs breaks loading in common browsers; only needed for remote http(s).
+    if (url.startsWith('http://') || url.startsWith('https://')) {
+      img.crossOrigin = 'anonymous'
+    }
     await new Promise<void>((resolve, reject) => {
       img.onload = () => resolve()
       img.onerror = () => reject(new Error(`Bitmap font page image failed to load: ${url}`))
