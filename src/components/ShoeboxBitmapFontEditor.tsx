@@ -1,7 +1,7 @@
 'use client'
 
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState, startTransition } from 'react'
-import { usePathname, useRouter, useSearchParams } from 'next/navigation'
+import { useSearchParams } from 'next/navigation'
 
 import {
   addKerning,
@@ -147,8 +147,6 @@ function readDarkUiFromStorage(): boolean | null {
 
 export default function ShoeboxBitmapFontEditor() {
   const searchParams = useSearchParams()
-  const router = useRouter()
-  const pathname = usePathname()
 
   /** Default dark; first paint matches SSR; then we apply localStorage if set. */
   const [darkTheme, setDarkThemeState] = useState(true)
@@ -283,16 +281,16 @@ export default function ShoeboxBitmapFontEditor() {
     startTransition(() => setImportSourceTab(t))
   }, [searchParams])
 
-  const setImportSourceTabFromUi = useCallback(
-    (tab: ImportSourceTab) => {
-      setImportSourceTab(tab)
-      const next = new URLSearchParams(searchParams.toString())
-      next.set('tab', tab)
-      const qs = next.toString()
-      router.replace(qs ? `${pathname}?${qs}` : pathname, { scroll: false })
-    },
-    [pathname, router, searchParams]
-  )
+  const setImportSourceTabFromUi = useCallback((tab: ImportSourceTab) => {
+    setImportSourceTab(tab)
+    // Keep `?tab=` in the address bar for bookmarks, but avoid `router.replace`:
+    // App Router soft navigation can remount this client tree (and drop in-memory edits).
+    if (typeof window === 'undefined') return
+    const url = new URL(window.location.href)
+    url.searchParams.set('tab', tab)
+    const next = url.pathname + url.search + url.hash
+    window.history.replaceState(window.history.state, '', next)
+  }, [])
   const [stripCharset, setStripCharset] = useState('€1234567890,.')
   const [stripFace, setStripFace] = useState('StyledCharset')
   const [stripAlpha, setStripAlpha] = useState(8)
