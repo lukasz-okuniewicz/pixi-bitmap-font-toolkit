@@ -261,7 +261,11 @@ export const BitmapFontCharTable = forwardRef<BitmapFontCharTableHandle, Props>(
     { key: 'h', label: 'Height', hint: 'Glyph rectangle height in the texture atlas (pixels)' },
     { key: 'xo', label: 'Offset X', hint: 'Horizontal drawing offset from pen position (pixels)' },
     { key: 'yo', label: 'Offset Y', hint: 'Vertical drawing offset from baseline/pen position (pixels)' },
-    { key: 'adv', label: 'Advance X', hint: 'How much to move pen/cursor after drawing this glyph (pixels)' },
+    {
+      key: 'adv',
+      label: '+Advance X',
+      hint: 'Extra horizontal advance added on top of Global advance X; exported xadvance is global + this (pixels)',
+    },
   ]
 
   const fieldTooltips: Record<'x' | 'y' | 'width' | 'height' | 'xoffset' | 'yoffset' | 'xadvance', string> = {
@@ -271,7 +275,8 @@ export const BitmapFontCharTable = forwardRef<BitmapFontCharTableHandle, Props>(
     height: 'Glyph rectangle height in the texture atlas (pixels)',
     xoffset: 'Horizontal drawing offset from pen position (pixels)',
     yoffset: 'Vertical drawing offset from baseline/pen position (pixels)',
-    xadvance: 'How much to move pen/cursor after drawing this glyph (pixels)',
+    xadvance:
+      'Per-glyph advance added on top of Global advance X; BMFont file stores global + this as each char’s xadvance (pixels)',
   }
 
   const [openHintKey, setOpenHintKey] = useState<string | null>(null)
@@ -467,10 +472,20 @@ export const BitmapFontCharTable = forwardRef<BitmapFontCharTableHandle, Props>(
           )}
           {onBulkPreset && (
             <>
-              <button type="button" style={btnSm} onClick={() => applyBulkPreset('xadvance_equals_width')}>
+              <button
+                type="button"
+                style={btnSm}
+                title="Sets +Advance X so exported xadvance equals glyph width (uses Global advance X)"
+                onClick={() => applyBulkPreset('xadvance_equals_width')}
+              >
                 adv = width
               </button>
-              <button type="button" style={btnSm} onClick={() => applyBulkPreset('xadvance_equals_max_wh')}>
+              <button
+                type="button"
+                style={btnSm}
+                title="Sets +Advance X so exported xadvance equals max(width, height)"
+                onClick={() => applyBulkPreset('xadvance_equals_max_wh')}
+              >
                 adv = max(w,h)
               </button>
             </>

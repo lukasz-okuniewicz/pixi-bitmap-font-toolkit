@@ -1,6 +1,6 @@
 import { numAttr, parseKeyValueLine } from './parseAttrs'
 import type { BitmapFontChar, BitmapFontKerning, BitmapFontModel, BitmapFontPage } from './types'
-import { defaultBitmapFontModel } from './types'
+import { defaultBitmapFontModel, effectiveCharXAdvance, globalXAdvanceValue } from './types'
 import { serializeBitmapFontText } from './BitmapFontTextSerializer'
 
 export function isBitmapFontBinaryMagic(buf: Uint8Array): boolean {
@@ -219,6 +219,7 @@ export function serializeBitmapFontBinary(model: BitmapFontModel): Uint8Array {
   const charCount = model.chars.length
   const charBuf = new ArrayBuffer(charCount * 20)
   const chDv = new DataView(charBuf)
+  const gAdv = globalXAdvanceValue(model.common)
   for (let i = 0; i < charCount; i++) {
     const c = model.chars[i]!
     const po = i * 20
@@ -230,7 +231,7 @@ export function serializeBitmapFontBinary(model: BitmapFontModel): Uint8Array {
     chDv.setUint16(po + 10, c.height, true)
     chDv.setInt16(po + 12, c.xoffset, true)
     chDv.setInt16(po + 14, c.yoffset, true)
-    chDv.setInt16(po + 16, c.xadvance, true)
+    chDv.setInt16(po + 16, effectiveCharXAdvance(c, gAdv), true)
     chDv.setUint8(po + 18, pg)
     chDv.setUint8(po + 19, c.chnl ?? 0)
   }

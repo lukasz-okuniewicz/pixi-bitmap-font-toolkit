@@ -1,5 +1,5 @@
 import type { BitmapFontChar, BitmapFontModel } from './types'
-import { charAtlasPage } from './types'
+import { charAtlasPage, effectiveCharXAdvance, globalXAdvanceValue } from './types'
 
 /** Quote a page file path for BMFont .fnt text lines when it contains spaces. */
 function fntQuotedFile(file: string): string {
@@ -38,10 +38,12 @@ function fntCommonLine(model: BitmapFontModel): string {
     `greenChnl=${common.greenChnl ?? 0}`,
     `blueChnl=${common.blueChnl ?? 0}`,
   ]
+  const gx = globalXAdvanceValue(common)
+  if (gx !== 0) parts.push(`globalXAdvance=${gx}`)
   return `common ${parts.join(' ')}`
 }
 
-function fntCharLine(c: BitmapFontChar, multiPage: boolean): string {
+function fntCharLine(c: BitmapFontChar, multiPage: boolean, globalAdvance: number): string {
   const p = charAtlasPage(c)
   const parts: string[] = [
     `id=${c.id}`,
@@ -51,7 +53,7 @@ function fntCharLine(c: BitmapFontChar, multiPage: boolean): string {
     `height=${c.height}`,
     `xoffset=${c.xoffset}`,
     `yoffset=${c.yoffset}`,
-    `xadvance=${c.xadvance}`,
+    `xadvance=${effectiveCharXAdvance(c, globalAdvance)}`,
   ]
   if (multiPage || p !== 0 || c.page !== undefined) parts.push(`page=${p}`)
   if (c.chnl !== undefined) parts.push(`chnl=${c.chnl}`)
@@ -68,8 +70,9 @@ export function serializeBitmapFontText(model: BitmapFontModel): string {
   }
   lines.push(`chars count=${model.chars.length}`)
   const multiPage = model.pages.length > 1
+  const gAdv = globalXAdvanceValue(model.common)
   for (const c of model.chars) {
-    lines.push(fntCharLine(c, multiPage))
+    lines.push(fntCharLine(c, multiPage, gAdv))
   }
   lines.push(`kernings count=${model.kernings.length}`)
   for (const k of model.kernings) {

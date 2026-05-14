@@ -246,13 +246,6 @@ export function charsetStripToModel(imageData: ImageData, charset: string, opts:
     }
   }
 
-  blobs.sort((a, b) => {
-    const cy = (a.y0 + a.y1) * 0.5
-    const dy = (b.y0 + b.y1) * 0.5
-    if (Math.abs(cy - dy) > 1) return cy - dy
-    return a.x0 - b.x0
-  })
-
   const spaceAnchor = opts.spaceAnchor ?? { x: Math.max(0, w - 1), y: Math.max(0, h - 1) }
   const swapDotComma = opts.swapDotCommaByShape !== false
 
@@ -304,6 +297,19 @@ export function charsetStripToModel(imageData: ImageData, charset: string, opts:
       error: `More glyph regions detected (${blobs.length}) than characters in charset (${charStrings.length}). Remove extras from the image or extend the charset string.`,
       warnings,
     }
+  }
+
+  const idCount = new Map<number, number>()
+  for (const c of charsOut) {
+    idCount.set(c.id, (idCount.get(c.id) ?? 0) + 1)
+  }
+  const dupIds = [...idCount.entries()]
+    .filter(([, n]) => n > 1)
+    .map(([id]) => `U+${id.toString(16).toUpperCase()}`)
+  if (dupIds.length > 0) {
+    warnings.push(
+      `Duplicate <char> ids (${dupIds.join(', ')}) — BMFont expects one glyph per code point; preview may show wrong glyphs.`
+    )
   }
 
   let maxH = 0

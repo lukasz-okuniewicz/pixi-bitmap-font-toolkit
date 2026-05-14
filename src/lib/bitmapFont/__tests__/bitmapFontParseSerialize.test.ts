@@ -135,4 +135,46 @@ describe('parse + serialize round-trip', () => {
     expect(again.chars[0]?.extraAttrs).toEqual(m.chars[0]?.extraAttrs)
     expect(again.kernings[0]?.extraAttrs).toEqual(m.kernings[0]?.extraAttrs)
   })
+
+  it('XML globalXAdvance decomposes char xadvance on parse and restores on serialize', () => {
+    const xml = `<?xml version="1.0"?>
+<font>
+  <info face="G" size="12" />
+  <common lineHeight="16" scaleW="64" scaleH="64" pages="1" globalXAdvance="3" />
+  <pages><page id="0" file="a.png" /></pages>
+  <chars count="2">
+    <char id="65" x="0" y="0" width="10" height="10" xoffset="0" yoffset="0" xadvance="13" />
+    <char id="66" x="10" y="0" width="8" height="10" xoffset="0" yoffset="0" xadvance="11" />
+  </chars>
+  <kernings count="0"></kernings>
+</font>`
+    const m = parseBitmapFont(xml)
+    expect(m.common.globalXAdvance).toBe(3)
+    expect(m.chars.find((c) => c.id === 65)?.xadvance).toBe(10)
+    expect(m.chars.find((c) => c.id === 66)?.xadvance).toBe(8)
+    const out = serializeBitmapFontXml(m, { indent: '  ' })
+    expect(out).toContain('globalXAdvance="3"')
+    expect(out).toMatch(/xadvance="13"/)
+    expect(out).toMatch(/xadvance="11"/)
+    const again = parseBitmapFont(out)
+    expect(again.common.globalXAdvance).toBe(3)
+    expect(again.chars).toEqual(m.chars)
+  })
+
+  it('.fnt text globalXAdvance round-trips', () => {
+    const text = `info face="F" size=12 bold=0 italic=0 charset="" unicode=1 stretchH=100 smooth=1 aa=1 padding=0,0,0,0 spacing=1,1 outline=0
+common lineHeight=16 base=13 scaleW=64 scaleH=64 pages=1 packed=0 alphaChnl=0 redChnl=0 greenChnl=0 blueChnl=0 globalXAdvance=2
+page id=0 file=a.png
+chars count=1
+char id=65 x=0 y=0 width=5 height=8 xoffset=0 yoffset=0 xadvance=9 page=0 chnl=15
+kernings count=0
+`
+    const m = parseBitmapFont(text)
+    expect(m.common.globalXAdvance).toBe(2)
+    expect(m.chars[0]?.xadvance).toBe(7)
+    const serialized = serializeBitmapFontText(m)
+    const b = parseBitmapFont(serialized)
+    expect(b.common.globalXAdvance).toBe(2)
+    expect(b.chars).toEqual(m.chars)
+  })
 })

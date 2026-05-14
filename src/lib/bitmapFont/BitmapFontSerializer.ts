@@ -1,5 +1,5 @@
 import type { BitmapFontChar, BitmapFontModel } from './types'
-import { charAtlasPage } from './types'
+import { charAtlasPage, effectiveCharXAdvance, globalXAdvanceValue } from './types'
 
 export type SerializeOptions = {
   /** '\t' or '    ' */
@@ -52,11 +52,13 @@ function commonAttrsXml(common: BitmapFontModel['common']): string {
   if (common.redChnl !== undefined) parts.push(`redChnl="${common.redChnl}"`)
   if (common.greenChnl !== undefined) parts.push(`greenChnl="${common.greenChnl}"`)
   if (common.blueChnl !== undefined) parts.push(`blueChnl="${common.blueChnl}"`)
+  const gx = globalXAdvanceValue(common)
+  if (gx !== 0) parts.push(`globalXAdvance="${gx}"`)
   pushExtraXmlParts(parts, common.extraAttrs)
   return parts.join(' ')
 }
 
-function charAttrsXml(c: BitmapFontChar, multiPage: boolean): string {
+function charAttrsXml(c: BitmapFontChar, multiPage: boolean, globalAdvance: number): string {
   const parts: string[] = [
     `id="${c.id}"`,
     `x="${c.x}"`,
@@ -65,7 +67,7 @@ function charAttrsXml(c: BitmapFontChar, multiPage: boolean): string {
     `height="${c.height}"`,
     `xoffset="${c.xoffset}"`,
     `yoffset="${c.yoffset}"`,
-    `xadvance="${c.xadvance}"`,
+    `xadvance="${effectiveCharXAdvance(c, globalAdvance)}"`,
   ]
   const p = charAtlasPage(c)
   if (multiPage || p !== 0 || c.page !== undefined) parts.push(`page="${p}"`)
@@ -97,6 +99,7 @@ export function serializeBitmapFontXml(model: BitmapFontModel, options: Partial<
   const i2 = indent + indent
 
   const multiPage = model.pages.length > 1
+  const gAdv = globalXAdvanceValue(model.common)
 
   const lines: string[] = []
   lines.push('<font>')
@@ -111,7 +114,7 @@ export function serializeBitmapFontXml(model: BitmapFontModel, options: Partial<
   lines.push(`${i1}</pages>`)
   lines.push(`${i1}<chars count="${model.chars.length}">`)
   for (const c of model.chars) {
-    lines.push(`${i2}<char ${charAttrsXml(c, multiPage)} />`)
+    lines.push(`${i2}<char ${charAttrsXml(c, multiPage, gAdv)} />`)
   }
   lines.push(`${i1}</chars>`)
   lines.push(`${i1}<kernings count="${model.kernings.length}">`)

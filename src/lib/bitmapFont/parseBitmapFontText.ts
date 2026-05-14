@@ -1,6 +1,6 @@
 import { numAttr, parseKeyValueLine } from './parseAttrs'
-import type { BitmapFontChar, BitmapFontModel } from './types'
-import { defaultBitmapFontModel } from './types'
+import type { BitmapFontChar } from './types'
+import { decomposeGlobalXAdvanceFromChars, defaultBitmapFontModel } from './types'
 
 /** Parse BMFont ASCII/text (.fnt) format. */
 export function parseBitmapFontText(text: string): BitmapFontModel {
@@ -41,6 +41,8 @@ export function parseBitmapFontText(text: string): BitmapFontModel {
       if (kv.redChnl != null && kv.redChnl !== '') model.common.redChnl = numAttr(kv.redChnl, 0)
       if (kv.greenChnl != null && kv.greenChnl !== '') model.common.greenChnl = numAttr(kv.greenChnl, 0)
       if (kv.blueChnl != null && kv.blueChnl !== '') model.common.blueChnl = numAttr(kv.blueChnl, 0)
+      if (kv.globalXAdvance != null && kv.globalXAdvance !== '') model.common.globalXAdvance = numAttr(kv.globalXAdvance, 0)
+      else delete model.common.globalXAdvance
     } else if (line.startsWith('page ')) {
       const kv = parseKeyValueLine(line)
       model.pages.push({
@@ -80,6 +82,8 @@ export function parseBitmapFontText(text: string): BitmapFontModel {
     model.pages = [{ id: 0, file: '' }]
     model.common.pages = Math.max(1, model.common.pages)
   }
+
+  decomposeGlobalXAdvanceFromChars(model)
 
   return model
 }

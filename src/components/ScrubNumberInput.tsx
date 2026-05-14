@@ -1,6 +1,6 @@
 'use client'
 
-import React, { useCallback } from 'react'
+import React, { useCallback, useRef } from 'react'
 
 export type ScrubNumberInputProps = Omit<React.InputHTMLAttributes<HTMLInputElement>, 'value' | 'onChange' | 'type'> & {
   value: number
@@ -37,6 +37,9 @@ export function ScrubNumberInput({
   disabled,
   ...rest
 }: ScrubNumberInputProps) {
+  const valueRef = useRef(value)
+  valueRef.current = value
+
   const handlePointerDown = useCallback(
     (e: React.PointerEvent<HTMLInputElement>) => {
       onPointerDownProp?.(e)
@@ -63,6 +66,8 @@ export function ScrubNumberInput({
         }
         ev.preventDefault()
         const next = clamp(Math.round(startValue + dx * sensitivity), min, max)
+        const latest = Number.isFinite(valueRef.current) ? valueRef.current : 0
+        if (next === latest) return
         onValueChange(next)
       }
 

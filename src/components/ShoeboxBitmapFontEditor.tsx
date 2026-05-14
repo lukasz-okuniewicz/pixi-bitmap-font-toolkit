@@ -28,7 +28,7 @@ import { BitmapFontPreview } from '@/lib/bitmapFont/BitmapFontPreview'
 import { BitmapFontTextureView } from '@/lib/bitmapFont/BitmapFontTextureView'
 import type { BitmapFontChar, BitmapFontModel } from '@/lib/bitmapFont/types'
 import type { BitmapFontDiagnosticTarget } from '@/lib/bitmapFont'
-import { defaultBitmapFontModel } from '@/lib/bitmapFont/types'
+import { defaultBitmapFontModel, globalXAdvanceValue } from '@/lib/bitmapFont/types'
 import { isBitmapFontXmlString } from '@/lib/bitmapFont/isBitmapFontXml'
 import { charsetStripToModel } from '@/lib/bitmapFont/charsetStripToModel'
 import { decodeImageFileToImageData } from '@/lib/bitmapFont/decodeImageFileToImageData'
@@ -49,6 +49,43 @@ import { WithTooltip } from '@/components/WithTooltip'
 function basename(p: string): string {
   const i = Math.max(p.lastIndexOf('/'), p.lastIndexOf('\\'))
   return i >= 0 ? p.slice(i + 1) : p
+}
+
+/** Short human-readable label for a code point in coverage / diagnostics text. */
+function glyphHintForCodePoint(id: number): string {
+  const named: Record<number, string> = {
+    0x0: 'NUL',
+    0x9: 'tab',
+    0xa: 'LF (line feed)',
+    0xb: 'vertical tab',
+    0xc: 'form feed',
+    0xd: 'CR (carriage return)',
+    0x20: 'space',
+    0x85: 'NEL',
+    0xa0: 'NBSP',
+    0xad: 'SHY (soft hyphen)',
+    0x200b: 'ZWSP',
+    0x200c: 'ZWNJ',
+    0x200d: 'ZWJ',
+    0x2028: 'line separator',
+    0x2029: 'paragraph separator',
+    0x2060: 'WJ',
+    0xfeff: 'BOM',
+    0x3000: 'ideographic space',
+  }
+  const hit = named[id]
+  if (hit) return hit
+  if (id <= 0x1f) return `C0 control U+${id.toString(16).toUpperCase().padStart(2, '0')}`
+  if (id === 0x7f) return 'DEL'
+  if (id >= 0x80 && id <= 0x9f) return `C1 control U+${id.toString(16).toUpperCase().padStart(2, '0')}`
+  const ch = String.fromCodePoint(id)
+  const esc = ch
+    .replaceAll('\\', '\\\\')
+    .replaceAll("'", "\\'")
+    .replaceAll('\n', '\\n')
+    .replaceAll('\r', '\\r')
+    .replaceAll('\t', '\\t')
+  return `'${esc}'`
 }
 
 /** Atlas image: MIME or common extension (some browsers leave type empty). */
@@ -270,7 +307,6 @@ export default function ShoeboxBitmapFontEditor() {
   const [showHelp, setShowHelp] = useState(false)
   const [diagnosticsOpen, setDiagnosticsOpen] = useState(true)
   const [roundTripNote, setRoundTripNote] = useState<string | null>(null)
-  const [coverageInput, setCoverageInput] = useState('')
   const [sessionOffer, setSessionOffer] = useState<BitmapFontSessionRecordV1 | null>(null)
 
   const [importSourceTab, setImportSourceTab] = useState<ImportSourceTab>('bmfont')
@@ -291,7 +327,7 @@ export default function ShoeboxBitmapFontEditor() {
     const next = url.pathname + url.search + url.hash
     window.history.replaceState(window.history.state, '', next)
   }, [])
-  const [stripCharset, setStripCharset] = useState('€1234567890,.')
+  const [stripCharset, setStripCharset] = useState('$€£1234567890,.')
   const [stripFace, setStripFace] = useState('StyledCharset')
   const [stripAlpha, setStripAlpha] = useState(8)
   const [stripMinGap, setStripMinGap] = useState(2)
@@ -304,7 +340,7 @@ export default function ShoeboxBitmapFontEditor() {
   const [rasterFontFile, setRasterFontFile] = useState<File | null>(null)
   const [rasterSize, setRasterSize] = useState(48)
   const [rasterCharset, setRasterCharset] = useState(
-    '€1234567890,.'
+    '$€£1234567890,.'
   )
   const [rasterColor, setRasterColor] = useState('#111827')
   const [rasterAtlasMaxW, setRasterAtlasMaxW] = useState(2048)
@@ -337,6 +373,49 @@ export default function ShoeboxBitmapFontEditor() {
   const hasXml = lastSavedXml != null
   const ready = hasXml && previewTextureUrls.length > 0 && previewTextureUrls.every((u) => !!u)
 
+  /** null = still measuring; Pixi preview only when true (atlas pixels must match &lt;common scaleW/scaleH&gt;). */
+  const [atlasPixelMatchesCommon, setAtlasPixelMatchesCommon] = useState<boolean | null>(null)
+
+  useEffect(() => {
+    if (!ready || previewTextureUrls.length === 0) {
+      setAtlasPixelMatchesCommon(null)
+      return
+    }
+    const urls = previewTextureUrls
+    const wantW = model.common.scaleW
+    const wantH = model.common.scaleH
+    let cancelled = false
+
+    const measure = (url: string) =>
+      new Promise<{ w: number; h: number }>((resolve, reject) => {
+        const img = new Image()
+        img.crossOrigin = 'anonymous'
+        img.onload = () => resolve({ w: img.naturalWidth, h: img.naturalHeight })
+        img.onerror = () => reject(new Error('atlas measure failed'))
+        img.src = url
+      })
+
+    ;(async () => {
+      try {
+        for (const url of urls) {
+          const { w, h } = await measure(url)
+          if (cancelled) return
+          if (w !== wantW || h !== wantH) {
+            setAtlasPixelMatchesCommon(false)
+            return
+          }
+        }
+        if (!cancelled) setAtlasPixelMatchesCommon(true)
+      } catch {
+        if (!cancelled) setAtlasPixelMatchesCommon(false)
+      }
+    })()
+
+    return () => {
+      cancelled = true
+    }
+  }, [ready, previewTextureUrls, model.common.scaleW, model.common.scaleH])
+
   const diagnostics = useMemo(() => bitmapFontDiagnostics(model), [model])
 
   const charIdMap = useMemo(() => {
@@ -346,10 +425,10 @@ export default function ShoeboxBitmapFontEditor() {
   }, [model.chars])
 
   const coverageReport = useMemo(() => {
-    if (!coverageInput) return { missing: [] as number[], zero: [] as number[] }
+    if (!previewText) return { missing: [] as number[], zero: [] as number[] }
     const seen = new Set<number>()
     const codes: number[] = []
-    for (const ch of coverageInput) {
+    for (const ch of previewText) {
       const cp = ch.codePointAt(0)!
       if (seen.has(cp)) continue
       seen.add(cp)
@@ -363,7 +442,7 @@ export default function ShoeboxBitmapFontEditor() {
       else if (ch.width <= 0 || ch.height <= 0) zero.push(id)
     }
     return { missing, zero }
-  }, [coverageInput, charIdMap])
+  }, [previewText, charIdMap])
 
   const applyDiagnosticTarget = useCallback((t: BitmapFontDiagnosticTarget) => {
     if (t.kind === 'char') {
@@ -784,11 +863,8 @@ export default function ShoeboxBitmapFontEditor() {
     const p = new BitmapFontPreview(previewHostRef.current, { width: 320, height: 180, background: bg })
     previewRef.current = p
     void p.init().then(() => {
-      if (ready) {
-        void p.sync(model, previewTextureUrls, previewText, serialized)
-        p.setShowBaseline(showBaseline)
-        p.setShowAnchorCenterY(showAnchorCenterY)
-      }
+      p.setShowBaseline(showBaseline)
+      p.setShowAnchorCenterY(showAnchorCenterY)
     })
     return () => {
       p.destroy()
@@ -800,8 +876,13 @@ export default function ShoeboxBitmapFontEditor() {
   useEffect(() => {
     const p = previewRef.current
     if (!p || !ready) return
+    if (atlasPixelMatchesCommon === false) {
+      p.clearFontDisplay()
+      return
+    }
+    if (atlasPixelMatchesCommon !== true) return
     void p.sync(model, previewTextureUrls, previewText, serialized)
-  }, [previewText, serialized, previewTextureUrls, model, ready])
+  }, [previewText, serialized, previewTextureUrls, model, ready, atlasPixelMatchesCommon])
 
   useEffect(() => {
     previewRef.current?.setShowBaseline(showBaseline)
@@ -939,9 +1020,9 @@ export default function ShoeboxBitmapFontEditor() {
     URL.revokeObjectURL(a.href)
   }, [exportFileName, model.pages, pageAtlasUrls, serialized, texUrl])
 
-  const patchCharAt = (index: number, patch: Partial<BitmapFontChar>) => {
+  const patchCharAt = useCallback((index: number, patch: Partial<BitmapFontChar>) => {
     setModel((prev) => patchChar(prev, index, patch))
-  }
+  }, [setModel])
 
   const bulkCharDelta = useCallback(
     (indices: number[], delta: { dx?: number; dy?: number; xoffset?: number; yoffset?: number; xadvance?: number }) => {
@@ -968,13 +1049,14 @@ export default function ShoeboxBitmapFontEditor() {
     (indices: number[], preset: BitmapFontBulkPreset) => {
       setModel((prev) => {
         let m = prev
+        const g = globalXAdvanceValue(prev.common)
         for (const mi of indices) {
           const c = m.chars[mi]
           if (!c) continue
           if (preset === 'xadvance_equals_width') {
-            m = patchChar(m, mi, { xadvance: c.width })
+            m = patchChar(m, mi, { xadvance: c.width - g })
           } else {
-            m = patchChar(m, mi, { xadvance: Math.max(c.width, c.height) })
+            m = patchChar(m, mi, { xadvance: Math.max(c.width, c.height) - g })
           }
         }
         return m
@@ -1729,6 +1811,27 @@ export default function ShoeboxBitmapFontEditor() {
             )}
           </div>
 
+          {ready && atlasPixelMatchesCommon === false && (
+            <div
+              style={{
+                fontSize: 13,
+                color: '#fbbf24',
+                marginBottom: 12,
+                lineHeight: 1.5,
+                padding: 10,
+                border: '1px solid #92400e',
+                borderRadius: 8,
+              }}
+              role="status"
+            >
+              Atlas image size does not match <strong style={{ color: 'var(--shoebox-text)' }}>scaleW</strong> /{' '}
+              <strong style={{ color: 'var(--shoebox-text)' }}>scaleH</strong> in the current font data ({model.common.scaleW}×{model.common.scaleH}). The Pixi
+              preview is paused until they match. For <strong style={{ color: 'var(--shoebox-text)' }}>Styled charset PNG</strong>, click{' '}
+              <strong style={{ color: 'var(--shoebox-text)' }}>Build BMFont from styled image</strong> after uploading your strip. For BMFont XML workflows,
+              upload the atlas that belongs to this XML or edit scale fields to match your PNG.
+            </div>
+          )}
+
           {loadError && (
             <div style={{ fontSize: 13, color: '#f87171', marginBottom: 12, lineHeight: 1.45 }} role="alert">
               {loadError}
@@ -1991,7 +2094,288 @@ export default function ShoeboxBitmapFontEditor() {
               </div>
             </section>
 
-            <section style={panelChrome} aria-labelledby="diagnostics-heading">
+            <section style={panelChrome} aria-labelledby="sample-text-heading">
+              <h2 id="sample-text-heading" style={sectionTitle}>
+                Sample text
+              </h2>
+              <label style={{ display: 'flex', flexDirection: 'column', gap: 6, fontSize: 12, color: textMuted }}>
+                Preview string (multi-line)
+                <WithTooltip
+                  darkTheme={darkTheme}
+                  block
+                  tip="Text rendered by Pixi BitmapText in the preview; supports line breaks. When this field is not empty, unique code points missing from the font or with a zero-width/zero-height atlas rectangle are listed below."
+                >
+                  <textarea
+                    value={previewText}
+                    onChange={(e) => setPreviewText(e.target.value)}
+                    rows={3}
+                    style={{
+                      padding: 8,
+                      background: inputBg,
+                      color: text,
+                      border: `1px solid ${inputBorder}`,
+                      borderRadius: 6,
+                      fontFamily: 'var(--font-geist-mono), monospace',
+                      fontSize: 12,
+                      width: '100%',
+                      boxSizing: 'border-box',
+                    }}
+                  />
+                </WithTooltip>
+              </label>
+              {previewText.trim() !== '' && (
+                <div style={{ marginTop: 8, fontSize: 12, lineHeight: 1.5, color: textMuted }}>
+                  {coverageReport.missing.length === 0 && coverageReport.zero.length === 0 ? (
+                    <p style={{ margin: 0, color: '#059669' }}>All unique code points are present with non-zero atlas size.</p>
+                  ) : (
+                    <>
+                      {coverageReport.missing.length > 0 && (
+                        <p style={{ margin: '0 0 6px', color: '#b91c1c' }}>
+                          <strong style={{ color: text }}>Missing:</strong>{' '}
+                          {coverageReport.missing
+                            .map(
+                              (id) =>
+                                `U+${id.toString(16).toUpperCase()} (${id}, ${glyphHintForCodePoint(id)})`
+                            )
+                            .join(', ')}
+                        </p>
+                      )}
+                      {coverageReport.zero.length > 0 && (
+                        <p style={{ margin: '0 0 6px', color: '#ca8a04' }}>
+                          <strong style={{ color: text }}>Zero-size:</strong>{' '}
+                          {coverageReport.zero
+                            .map(
+                              (id) =>
+                                `U+${id.toString(16).toUpperCase()} (${id}, ${glyphHintForCodePoint(id)})`
+                            )
+                            .join(', ')}
+                        </p>
+                      )}
+                      <button
+                        type="button"
+                        disabled={coverageReport.missing.length === 0}
+                        onClick={() => {
+                          const id = coverageReport.missing[0]
+                          if (id == null) return
+                          charTableRef.current?.setFilterText(`U+${id.toString(16).toUpperCase()}`)
+                        }}
+                        style={{
+                          fontSize: 11,
+                          fontWeight: 600,
+                          padding: '4px 10px',
+                          cursor: coverageReport.missing.length === 0 ? 'not-allowed' : 'pointer',
+                          opacity: coverageReport.missing.length === 0 ? 0.5 : 1,
+                          borderRadius: 6,
+                          border: `1px solid ${inputBorder}`,
+                          background: darkTheme ? '#334155' : '#e5e7eb',
+                          color: text,
+                        }}
+                      >
+                        Filter first missing in character table
+                      </button>
+                    </>
+                  )}
+                </div>
+              )}
+            </section>
+            <section style={panelChrome} aria-labelledby="atlas-preview-heading">
+              <h2 id="atlas-preview-heading" style={sectionTitle}>
+                Atlas &amp; live preview
+              </h2>
+              <div
+                style={{
+                  display: 'grid',
+                  gridTemplateColumns: stackPreviews ? '1fr' : '1fr 1fr',
+                  gap: 12,
+                }}
+              >
+                <div style={{ display: 'flex', flexDirection: 'column', minWidth: 0, gap: 6 }}>
+                  <WithTooltip darkTheme={darkTheme} tip="Atlas: wheel zoom, drag to pan, drag a glyph box to change atlas X/Y in the font.">
+                    <div style={{ fontSize: 12, fontWeight: 600, color: textMuted }}>Texture</div>
+                  </WithTooltip>
+                  {model.pages.length > 1 && (
+                    <div role="tablist" aria-label="Atlas page" style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                      {[...model.pages]
+                        .sort((a, b) => a.id - b.id)
+                        .map((p) => (
+                          <button
+                            key={p.id}
+                            type="button"
+                            role="tab"
+                            aria-selected={atlasViewPageId === p.id}
+                            onClick={() => setActiveAtlasPageId(p.id)}
+                            style={{
+                              fontSize: 11,
+                              fontWeight: 600,
+                              padding: '4px 10px',
+                              borderRadius: 6,
+                              border: `1px solid ${inputBorder}`,
+                              cursor: 'pointer',
+                              background: atlasViewPageId === p.id ? '#0d9488' : darkTheme ? '#334155' : '#e5e7eb',
+                              color: atlasViewPageId === p.id ? '#fff' : text,
+                            }}
+                          >
+                            Page {p.id}
+                          </button>
+                        ))}
+                    </div>
+                  )}
+                  <WithTooltip darkTheme={darkTheme} block tip="Atlas preview. Glyph outlines reflect the current character table.">
+                    <div
+                      ref={textureHostRef}
+                      style={{
+                        height: PREVIEW_HOST_HEIGHT,
+                        width: '100%',
+                        border: `1px solid ${panelBorder}`,
+                        borderRadius: 8,
+                        overflow: 'hidden',
+                        contain: 'strict',
+                        background: 'var(--shoebox-canvas-bg)',
+                      }}
+                    />
+                  </WithTooltip>
+                </div>
+                <div style={{ display: 'flex', flexDirection: 'column', minWidth: 0, gap: 6 }}>
+                  <WithTooltip darkTheme={darkTheme} tip="Live BitmapText using BitmapFont.install with your XML and atlas.">
+                    <div style={{ fontSize: 12, fontWeight: 600, color: textMuted }}>Pixi preview</div>
+                  </WithTooltip>
+                  <WithTooltip darkTheme={darkTheme} block tip="Renders the same way as in-game BitmapText.">
+                    <div
+                      ref={previewHostRef}
+                      style={{
+                        height: PREVIEW_HOST_HEIGHT,
+                        width: '100%',
+                        border: `1px solid ${panelBorder}`,
+                        borderRadius: 8,
+                        overflow: 'hidden',
+                        contain: 'strict',
+                        background: 'var(--shoebox-canvas-bg)',
+                      }}
+                    />
+                  </WithTooltip>
+                </div>
+              </div>
+            </section>
+
+            <section
+              style={{
+                ...panelChrome,
+                ...(hasXml ? { marginBottom: 0 } : !dirty ? { marginBottom: 0 } : {}),
+              }}
+              aria-labelledby="glyphs-kerning-heading"
+            >
+              <h2 id="glyphs-kerning-heading" style={sectionTitle}>
+                Glyphs &amp; kerning
+              </h2>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 16, minHeight: 0 }}>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12, alignItems: 'flex-end' }}>
+                  <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                    <span style={{ fontSize: 12, fontWeight: 600, color: text }}>Global advance X</span>
+                    <WithTooltip
+                      darkTheme={darkTheme}
+                      block
+                      tip="Horizontal spacing added to every glyph (Shoebox-style global tracking). Each row’s +Advance X is added on top. Exported BMFont &lt;char xadvance&gt; is the sum so Pixi and other tools stay compatible."
+                    >
+                      <ScrubNumberInput
+                        value={model.common.globalXAdvance ?? 0}
+                        onValueChange={(n) => setModel((p) => setCommon(p, { globalXAdvance: n }))}
+                        style={{
+                          width: 88,
+                          padding: 6,
+                          background: inputBg,
+                          color: text,
+                          border: `1px solid ${inputBorder}`,
+                          borderRadius: 4,
+                          boxSizing: 'border-box',
+                        }}
+                      />
+                    </WithTooltip>
+                  </label>
+                  <span style={{ fontSize: 11, color: textMuted, maxWidth: 420, lineHeight: 1.4 }}>
+                    Per-glyph column is the extra advance on top of this value; XML still stores combined xadvance per character.
+                  </span>
+                </div>
+                <BitmapFontCharTable
+                  ref={charTableRef}
+                  chars={model.chars}
+                  selectedId={selectedCharId}
+                  onSelect={setSelectedCharId}
+                  onPatch={patchCharAt}
+                  onBulkDelta={bulkCharDelta}
+                  onBulkPreset={bulkCharPreset}
+                  darkTheme={darkTheme}
+                  text={text}
+                  textMuted={textMuted}
+                  inputBorder={inputBorder}
+                  inputBg={inputBg}
+                />
+
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'center' }}>
+                  <input
+                    ref={kernFontInputRef}
+                    type="file"
+                    accept=".ttf,.otf,font/ttf,font/otf"
+                    hidden
+                    onChange={async (e) => {
+                      const f = e.target.files?.[0]
+                      e.target.value = ''
+                      if (!f) return
+                      await runKerningEstimate(await f.arrayBuffer())
+                    }}
+                  />
+                  <WithTooltip
+                    darkTheme={darkTheme}
+                    block
+                    tip="Canvas-based pair widths vs single glyphs — heuristic, best on proportional Latin fonts. Uses glyphs in the character table (or the raster charset if fewer than two). Uses the .ttf/.otf from “Raster from font file” when set, otherwise prompts for a font file."
+                  >
+                    <button
+                      type="button"
+                      disabled={kernEstimateBusy}
+                      onClick={async () => {
+                        if (rasterFontFile) {
+                          await runKerningEstimate(await rasterFontFile.arrayBuffer())
+                        } else {
+                          kernFontInputRef.current?.click()
+                        }
+                      }}
+                      style={{
+                        fontSize: 12,
+                        fontWeight: 600,
+                        padding: '6px 12px',
+                        cursor: kernEstimateBusy ? 'wait' : 'pointer',
+                        opacity: kernEstimateBusy ? 0.65 : 1,
+                        background: darkTheme ? '#334155' : '#e5e7eb',
+                        color: text,
+                        border: `1px solid ${inputBorder}`,
+                        borderRadius: 8,
+                      }}
+                    >
+                      {kernEstimateBusy ? 'Estimating…' : 'Estimate kernings from font…'}
+                    </button>
+                  </WithTooltip>
+                </div>
+
+                <BitmapFontKerningEditor
+                  ref={kernEditorRef}
+                  kernings={model.kernings}
+                  onPatch={(i, p) => setModel((prev) => patchKerning(prev, i, p))}
+                  onRemove={(i) => setModel((prev) => removeKerningAt(prev, i))}
+                  onAdd={() => setModel((prev) => addKerning(prev, { first: 32, second: 32, amount: 0 }))}
+                  previewFirst={kernFirst}
+                  previewSecond={kernSecond}
+                  onPreviewFirst={setKernFirst}
+                  onPreviewSecond={setKernSecond}
+                  charCodeLabel={charCodeLabel}
+                  darkTheme={darkTheme}
+                  text={text}
+                  textMuted={textMuted}
+                  inputBorder={inputBorder}
+                  inputBg={inputBg}
+                />
+              </div>
+            </section>
+
+            <section style={{ ...panelChrome, marginTop: 16 }} aria-labelledby="diagnostics-heading">
               <button
                 type="button"
                 id="diagnostics-heading"
@@ -2120,274 +2504,6 @@ export default function ShoeboxBitmapFontEditor() {
                   )}
                 </div>
               )}
-            </section>
-
-            <section style={panelChrome} aria-labelledby="sample-text-heading">
-              <h2 id="sample-text-heading" style={sectionTitle}>
-                Sample text
-              </h2>
-              <label style={{ display: 'flex', flexDirection: 'column', gap: 6, fontSize: 12, color: textMuted }}>
-                Preview string (multi-line)
-                <WithTooltip darkTheme={darkTheme} block tip="Text rendered by Pixi BitmapText in the preview; supports line breaks.">
-                  <textarea
-                    value={previewText}
-                    onChange={(e) => setPreviewText(e.target.value)}
-                    rows={3}
-                    style={{
-                      padding: 8,
-                      background: inputBg,
-                      color: text,
-                      border: `1px solid ${inputBorder}`,
-                      borderRadius: 6,
-                      fontFamily: 'var(--font-geist-mono), monospace',
-                      fontSize: 12,
-                      width: '100%',
-                      boxSizing: 'border-box',
-                    }}
-                  />
-                </WithTooltip>
-              </label>
-              <label style={{ display: 'flex', flexDirection: 'column', gap: 6, fontSize: 12, color: textMuted, marginTop: 14 }}>
-                Coverage string
-                <WithTooltip
-                  darkTheme={darkTheme}
-                  block
-                  tip="Lists code points from this string that are missing from the font or have a zero-width/zero-height atlas rectangle. Useful for checking UI copy against your charset."
-                >
-                  <textarea
-                    value={coverageInput}
-                    onChange={(e) => setCoverageInput(e.target.value)}
-                    rows={2}
-                    placeholder="Paste sample UI copy…"
-                    style={{
-                      padding: 8,
-                      background: inputBg,
-                      color: text,
-                      border: `1px solid ${inputBorder}`,
-                      borderRadius: 6,
-                      fontFamily: 'var(--font-geist-mono), monospace',
-                      fontSize: 12,
-                      width: '100%',
-                      boxSizing: 'border-box',
-                    }}
-                  />
-                </WithTooltip>
-              </label>
-              {coverageInput.trim() !== '' && (
-                <div style={{ marginTop: 8, fontSize: 12, lineHeight: 1.5, color: textMuted }}>
-                  {coverageReport.missing.length === 0 && coverageReport.zero.length === 0 ? (
-                    <p style={{ margin: 0, color: '#059669' }}>All unique code points are present with non-zero atlas size.</p>
-                  ) : (
-                    <>
-                      {coverageReport.missing.length > 0 && (
-                        <p style={{ margin: '0 0 6px', color: '#b91c1c' }}>
-                          <strong style={{ color: text }}>Missing:</strong>{' '}
-                          {coverageReport.missing
-                            .map((id) => `U+${id.toString(16).toUpperCase()} (${id})`)
-                            .join(', ')}
-                        </p>
-                      )}
-                      {coverageReport.zero.length > 0 && (
-                        <p style={{ margin: '0 0 6px', color: '#ca8a04' }}>
-                          <strong style={{ color: text }}>Zero-size:</strong>{' '}
-                          {coverageReport.zero.map((id) => `U+${id.toString(16).toUpperCase()} (${id})`).join(', ')}
-                        </p>
-                      )}
-                      <button
-                        type="button"
-                        disabled={coverageReport.missing.length === 0}
-                        onClick={() => {
-                          const id = coverageReport.missing[0]
-                          if (id == null) return
-                          charTableRef.current?.setFilterText(`U+${id.toString(16).toUpperCase()}`)
-                        }}
-                        style={{
-                          fontSize: 11,
-                          fontWeight: 600,
-                          padding: '4px 10px',
-                          cursor: coverageReport.missing.length === 0 ? 'not-allowed' : 'pointer',
-                          opacity: coverageReport.missing.length === 0 ? 0.5 : 1,
-                          borderRadius: 6,
-                          border: `1px solid ${inputBorder}`,
-                          background: darkTheme ? '#334155' : '#e5e7eb',
-                          color: text,
-                        }}
-                      >
-                        Filter first missing in character table
-                      </button>
-                    </>
-                  )}
-                </div>
-              )}
-            </section>
-            <section style={panelChrome} aria-labelledby="atlas-preview-heading">
-              <h2 id="atlas-preview-heading" style={sectionTitle}>
-                Atlas &amp; live preview
-              </h2>
-              <div
-                style={{
-                  display: 'grid',
-                  gridTemplateColumns: stackPreviews ? '1fr' : '1fr 1fr',
-                  gap: 12,
-                }}
-              >
-                <div style={{ display: 'flex', flexDirection: 'column', minWidth: 0, gap: 6 }}>
-                  <WithTooltip darkTheme={darkTheme} tip="Atlas: wheel zoom, drag to pan, drag a glyph box to change atlas X/Y in the font.">
-                    <div style={{ fontSize: 12, fontWeight: 600, color: textMuted }}>Texture</div>
-                  </WithTooltip>
-                  {model.pages.length > 1 && (
-                    <div role="tablist" aria-label="Atlas page" style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-                      {[...model.pages]
-                        .sort((a, b) => a.id - b.id)
-                        .map((p) => (
-                          <button
-                            key={p.id}
-                            type="button"
-                            role="tab"
-                            aria-selected={atlasViewPageId === p.id}
-                            onClick={() => setActiveAtlasPageId(p.id)}
-                            style={{
-                              fontSize: 11,
-                              fontWeight: 600,
-                              padding: '4px 10px',
-                              borderRadius: 6,
-                              border: `1px solid ${inputBorder}`,
-                              cursor: 'pointer',
-                              background: atlasViewPageId === p.id ? '#0d9488' : darkTheme ? '#334155' : '#e5e7eb',
-                              color: atlasViewPageId === p.id ? '#fff' : text,
-                            }}
-                          >
-                            Page {p.id}
-                          </button>
-                        ))}
-                    </div>
-                  )}
-                  <WithTooltip darkTheme={darkTheme} block tip="Atlas preview. Glyph outlines reflect the current character table.">
-                    <div
-                      ref={textureHostRef}
-                      style={{
-                        height: PREVIEW_HOST_HEIGHT,
-                        width: '100%',
-                        border: `1px solid ${panelBorder}`,
-                        borderRadius: 8,
-                        overflow: 'hidden',
-                        contain: 'strict',
-                        background: 'var(--shoebox-canvas-bg)',
-                      }}
-                    />
-                  </WithTooltip>
-                </div>
-                <div style={{ display: 'flex', flexDirection: 'column', minWidth: 0, gap: 6 }}>
-                  <WithTooltip darkTheme={darkTheme} tip="Live BitmapText using BitmapFont.install with your XML and atlas.">
-                    <div style={{ fontSize: 12, fontWeight: 600, color: textMuted }}>Pixi preview</div>
-                  </WithTooltip>
-                  <WithTooltip darkTheme={darkTheme} block tip="Renders the same way as in-game BitmapText.">
-                    <div
-                      ref={previewHostRef}
-                      style={{
-                        height: PREVIEW_HOST_HEIGHT,
-                        width: '100%',
-                        border: `1px solid ${panelBorder}`,
-                        borderRadius: 8,
-                        overflow: 'hidden',
-                        contain: 'strict',
-                        background: 'var(--shoebox-canvas-bg)',
-                      }}
-                    />
-                  </WithTooltip>
-                </div>
-              </div>
-            </section>
-
-            <section
-              style={{
-                ...panelChrome,
-                ...(hasXml ? { marginBottom: 0 } : !dirty ? { marginBottom: 0 } : {}),
-              }}
-              aria-labelledby="glyphs-kerning-heading"
-            >
-              <h2 id="glyphs-kerning-heading" style={sectionTitle}>
-                Glyphs &amp; kerning
-              </h2>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 16, minHeight: 0 }}>
-                <BitmapFontCharTable
-                  ref={charTableRef}
-                  chars={model.chars}
-                  selectedId={selectedCharId}
-                  onSelect={setSelectedCharId}
-                  onPatch={patchCharAt}
-                  onBulkDelta={bulkCharDelta}
-                  onBulkPreset={bulkCharPreset}
-                  darkTheme={darkTheme}
-                  text={text}
-                  textMuted={textMuted}
-                  inputBorder={inputBorder}
-                  inputBg={inputBg}
-                />
-
-                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'center' }}>
-                  <input
-                    ref={kernFontInputRef}
-                    type="file"
-                    accept=".ttf,.otf,font/ttf,font/otf"
-                    hidden
-                    onChange={async (e) => {
-                      const f = e.target.files?.[0]
-                      e.target.value = ''
-                      if (!f) return
-                      await runKerningEstimate(await f.arrayBuffer())
-                    }}
-                  />
-                  <WithTooltip
-                    darkTheme={darkTheme}
-                    block
-                    tip="Canvas-based pair widths vs single glyphs — heuristic, best on proportional Latin fonts. Uses glyphs in the character table (or the raster charset if fewer than two). Uses the .ttf/.otf from “Raster from font file” when set, otherwise prompts for a font file."
-                  >
-                    <button
-                      type="button"
-                      disabled={kernEstimateBusy}
-                      onClick={async () => {
-                        if (rasterFontFile) {
-                          await runKerningEstimate(await rasterFontFile.arrayBuffer())
-                        } else {
-                          kernFontInputRef.current?.click()
-                        }
-                      }}
-                      style={{
-                        fontSize: 12,
-                        fontWeight: 600,
-                        padding: '6px 12px',
-                        cursor: kernEstimateBusy ? 'wait' : 'pointer',
-                        opacity: kernEstimateBusy ? 0.65 : 1,
-                        background: darkTheme ? '#334155' : '#e5e7eb',
-                        color: text,
-                        border: `1px solid ${inputBorder}`,
-                        borderRadius: 8,
-                      }}
-                    >
-                      {kernEstimateBusy ? 'Estimating…' : 'Estimate kernings from font…'}
-                    </button>
-                  </WithTooltip>
-                </div>
-
-                <BitmapFontKerningEditor
-                  ref={kernEditorRef}
-                  kernings={model.kernings}
-                  onPatch={(i, p) => setModel((prev) => patchKerning(prev, i, p))}
-                  onRemove={(i) => setModel((prev) => removeKerningAt(prev, i))}
-                  onAdd={() => setModel((prev) => addKerning(prev, { first: 32, second: 32, amount: 0 }))}
-                  previewFirst={kernFirst}
-                  previewSecond={kernSecond}
-                  onPreviewFirst={setKernFirst}
-                  onPreviewSecond={setKernSecond}
-                  charCodeLabel={charCodeLabel}
-                  darkTheme={darkTheme}
-                  text={text}
-                  textMuted={textMuted}
-                  inputBorder={inputBorder}
-                  inputBg={inputBg}
-                />
-              </div>
             </section>
 
             {/* Save/export only when serialized XML differs from last load or download baseline. */}

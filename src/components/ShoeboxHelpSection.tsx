@@ -190,7 +190,8 @@ export function ShoeboxHelpSection({ darkTheme, text, textMuted, inputBorder, pa
         Lists every glyph in the font. Rows are virtualized for performance on large fonts. Use <strong>Filter</strong> to narrow by code point,{' '}
         <code style={codeStyle}>U+…</code>, or glyph label. <strong>Select filtered</strong> selects all visible rows; click rows with{' '}
         <kbd style={codeStyle}>⇧</kbd> for a range or <kbd style={codeStyle}>⌘</kbd>/<kbd style={codeStyle}>Ctrl</kbd> to toggle. <strong>Bulk Δ</strong> adds the
-        typed deltas to every selected glyph’s atlas position and offsets; preset buttons set <strong>adv = width</strong> or <strong>adv = max(w,h)</strong> in one undo step. Click the grid background (below headers) to focus the table, then use <kbd style={codeStyle}>↑</kbd>/<kbd style={codeStyle}>↓</kbd>, Home/End, and Enter (opens atlas X) for keyboard navigation. Click a row’s char code to highlight that glyph on the atlas when <strong>Glyph outlines</strong> is on.
+        typed deltas to every selected glyph’s atlas position and offsets; preset buttons set effective advance to <strong>glyph width</strong> or{' '}
+        <strong>max(w,h)</strong> (accounting for <strong>Global advance X</strong>) in one undo step. Click the grid background (below headers) to focus the table, then use <kbd style={codeStyle}>↑</kbd>/<kbd style={codeStyle}>↓</kbd>, Home/End, and Enter (opens atlas X) for keyboard navigation. Click a row’s char code to highlight that glyph on the atlas when <strong>Glyph outlines</strong> is on.
       </p>
       <ul style={ul}>
         <li>
@@ -203,7 +204,12 @@ export function ShoeboxHelpSection({ darkTheme, text, textMuted, inputBorder, pa
           <strong>Offset X / Y</strong> — Pixel offset from the pen when drawing the glyph; use Y to nudge vertically relative to the line.
         </li>
         <li>
-          <strong>Advance X</strong> — How far to advance the pen after the glyph (horizontal stride).
+          <strong>Global advance X</strong> — Horizontal spacing added to every glyph (stored on <code style={codeStyle}>&lt;common globalXAdvance=&quot;…&quot;&gt;</code>{' '}
+          when non-zero). The character table’s per-glyph value is added on top; the exported file still uses a single combined <code style={codeStyle}>xadvance</code> per{' '}
+          <code style={codeStyle}>&lt;char&gt;</code> for BMFont compatibility.
+        </li>
+        <li>
+          <strong>+Advance X</strong> — Per-glyph advance added on top of Global advance X; exported <code style={codeStyle}>xadvance</code> is the sum (horizontal stride after the glyph).
         </li>
       </ul>
 

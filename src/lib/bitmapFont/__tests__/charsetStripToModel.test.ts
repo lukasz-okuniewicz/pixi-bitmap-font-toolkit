@@ -35,6 +35,29 @@ describe('alphaBBoxInRect', () => {
 })
 
 describe('charsetStripToModel', () => {
+  it('keeps left-to-right strip order when glyph vertical centers differ by more than 1px', () => {
+    const img = rgbaImage(88, 32)
+    // Left “A”: ink lower on the canvas (larger cy). Right “B”: ink higher (smaller cy).
+    // Old cy-based global sort would reorder these blobs and pair the wrong textures to A/B.
+    fillRect(img, 4, 14, 20, 28)
+    fillRect(img, 52, 4, 68, 14)
+    const r = charsetStripToModel(img, 'AB', {
+      alphaThreshold: 1,
+      minGapPx: 2,
+      minRowGapPx: 3,
+      trimPadPx: 0,
+      pageFile: 'strip.png',
+      face: 'StripCy',
+      spaceAdvancePx: 8,
+    })
+    expect(r.ok).toBe(true)
+    if (!r.ok) return
+    expect(r.model.chars).toHaveLength(2)
+    expect(r.model.chars[0]!.id).toBe(65)
+    expect(r.model.chars[1]!.id).toBe(66)
+    expect(r.model.chars[0]!.x).toBeLessThan(r.model.chars[1]!.x)
+  })
+
   it('segments two horizontal glyphs and assigns code points', () => {
     const img = rgbaImage(80, 32)
     fillRect(img, 4, 8, 14, 24)

@@ -30,6 +30,11 @@ export type BitmapFontCommon = {
   redChnl?: number
   greenChnl?: number
   blueChnl?: number
+  /**
+   * Pixels added to every glyph’s exported `xadvance` (editor decomposition; Shoebox-style global spacing).
+   * In-memory `BitmapFontChar.xadvance` is the per-glyph addition; serializers write `globalXAdvance + xadvance` per char.
+   */
+  globalXAdvance?: number
   /** Unknown XML attributes preserved on `<common>`. */
   extraAttrs?: Record<string, string>
 }
@@ -44,6 +49,7 @@ export type BitmapFontChar = {
   height: number
   xoffset: number
   yoffset: number
+  /** Per-glyph horizontal advance added on top of `common.globalXAdvance`; serialized `xadvance` is the sum. */
   xadvance: number
   /** Atlas page index; omit or 0 for single-page fonts. */
   page?: number
@@ -79,4 +85,22 @@ export const defaultBitmapFontModel = (): BitmapFontModel => ({
 /** Effective atlas page for a glyph (BMFont default is 0). */
 export function charAtlasPage(c: BitmapFontChar): number {
   return c.page ?? 0
+}
+
+export function globalXAdvanceValue(common: BitmapFontCommon): number {
+  const g = common.globalXAdvance
+  return g === undefined || !Number.isFinite(g) ? 0 : g
+}
+
+/** BMFont / Pixi `xadvance` = global spacing + per-glyph local advance. */
+export function effectiveCharXAdvance(c: BitmapFontChar, global: number): number {
+  const g = Number.isFinite(global) ? global : 0
+  return g + c.xadvance
+}
+
+/** After reading combined `xadvance` from a file, subtract `common.globalXAdvance` so each char stores local advance only. */
+export function decomposeGlobalXAdvanceFromChars(model: BitmapFontModel): void {
+  const g = globalXAdvanceValue(model.common)
+  if (g === 0) return
+  for (const c of model.chars) c.xadvance -= g
 }

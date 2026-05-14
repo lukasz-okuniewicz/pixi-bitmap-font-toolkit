@@ -1,7 +1,7 @@
 import { numAttr } from './parseAttrs'
 import { parseBitmapFontText } from './parseBitmapFontText'
 import type { BitmapFontChar, BitmapFontKerning, BitmapFontModel, BitmapFontPage } from './types'
-import { defaultBitmapFontModel } from './types'
+import { decomposeGlobalXAdvanceFromChars, defaultBitmapFontModel } from './types'
 import type { BitmapFontSourceKind } from './isBitmapFontXml'
 import { isBitmapFontXmlString } from './isBitmapFontXml'
 
@@ -72,6 +72,7 @@ const COMMON_ATTRS = new Set([
   'redChnl',
   'greenChnl',
   'blueChnl',
+  'globalXAdvance',
 ])
 
 const PAGE_ATTRS = new Set(['id', 'file'])
@@ -124,6 +125,9 @@ function readCommonFromXml(common: Element, model: BitmapFontModel): void {
   if (greenChnl != null && greenChnl !== '') model.common.greenChnl = numAttr(greenChnl, 0)
   const blueChnl = common.getAttribute('blueChnl')
   if (blueChnl != null && blueChnl !== '') model.common.blueChnl = numAttr(blueChnl, 0)
+  const globalXAdvance = common.getAttribute('globalXAdvance')
+  if (globalXAdvance != null && globalXAdvance !== '') model.common.globalXAdvance = numAttr(globalXAdvance, 0)
+  else delete model.common.globalXAdvance
   const ex = collectExtraAttrs(common, COMMON_ATTRS)
   if (ex) model.common.extraAttrs = ex
   else delete model.common.extraAttrs
@@ -209,6 +213,7 @@ export function parseBitmapFontXml(xml: string): BitmapFontModel {
 
   const charsEl = root.querySelector('chars')
   model.chars = readChars(charsEl)
+  decomposeGlobalXAdvanceFromChars(model)
 
   model.kernings = readKernings(root)
 

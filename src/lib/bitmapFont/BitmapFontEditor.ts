@@ -2,9 +2,15 @@ import type { BitmapFontChar, BitmapFontCommon, BitmapFontInfo, BitmapFontKernin
 
 export function patchChar(model: BitmapFontModel, index: number, patch: Partial<BitmapFontChar>): BitmapFontModel {
   if (index < 0 || index >= model.chars.length) return model
-  const next = { ...model, chars: [...model.chars] }
-  next.chars[index] = { ...next.chars[index], ...patch }
-  return next
+  const cur = model.chars[index]!
+  for (const k of Object.keys(patch) as (keyof BitmapFontChar)[]) {
+    if (patch[k] !== cur[k]) {
+      const next = { ...model, chars: [...model.chars] }
+      next.chars[index] = { ...cur, ...patch }
+      return next
+    }
+  }
+  return model
 }
 
 export function patchKerning(model: BitmapFontModel, index: number, patch: Partial<BitmapFontKerning>): BitmapFontModel {

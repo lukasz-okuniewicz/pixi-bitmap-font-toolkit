@@ -211,6 +211,30 @@ export class BitmapFontPreview {
     }
   }
 
+  /**
+   * Drop installed font + preview text when the atlas no longer matches the BMFont XML (e.g. new image
+   * uploaded before rebuilding metrics).
+   */
+  clearFontDisplay(): void {
+    const root = this.contentRoot
+    if (this.bitmapText && root) {
+      try {
+        root.removeChild(this.bitmapText)
+      } catch {
+        /* ignore */
+      }
+      try {
+        this.bitmapText.destroy(true)
+      } catch {
+        /* ignore */
+      }
+      this.bitmapText = null
+    }
+    this.uninstallFont()
+    this.drawGuides()
+    this.renderOnce()
+  }
+
   destroy() {
     this.destroyed = true
     this.userAdjustedPreviewTransform = false
@@ -345,10 +369,28 @@ export class BitmapFontPreview {
       }
     }
 
+    const wantW = model.common.scaleW
+    const wantH = model.common.scaleH
+    for (let i = 0; i < textures.length; i++) {
+      const t = textures[i]!
+      const tw = t.baseTexture.width
+      const th = t.baseTexture.height
+      if (tw !== wantW || th !== wantH) {
+        console.warn(
+          `[BitmapFontPreview] skipping install: atlas page ${i} is ${tw}×${th} but <common> expects scaleW="${wantW}" scaleH="${wantH}". Rebuild font data or fix scale fields.`
+        )
+        this.installedFace = null
+        this.renderOnce()
+        return
+      }
+    }
+
     try {
       PIXI.BitmapFont.install(xml, textures.length === 1 ? textures[0]! : textures, true)
     } catch (e) {
       console.error('[BitmapFontPreview] install failed', e)
+      this.installedFace = null
+      this.renderOnce()
       return
     }
     this.installedFace = face

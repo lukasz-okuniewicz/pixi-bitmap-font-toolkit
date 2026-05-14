@@ -23,6 +23,9 @@ function shallowCommonIssues(a: BitmapFontModel['common'], b: BitmapFontModel['c
   if (a.scaleW !== b.scaleW) m.push(`scaleW ${a.scaleW} → ${b.scaleW}`)
   if (a.scaleH !== b.scaleH) m.push(`scaleH ${a.scaleH} → ${b.scaleH}`)
   if (a.pages !== b.pages) m.push(`common.pages ${a.pages} → ${b.pages}`)
+  const ga = a.globalXAdvance ?? 0
+  const gb = b.globalXAdvance ?? 0
+  if (ga !== gb) m.push(`globalXAdvance ${ga} → ${gb}`)
   return m
 }
 
