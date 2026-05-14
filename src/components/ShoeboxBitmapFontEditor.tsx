@@ -2264,7 +2264,15 @@ export default function ShoeboxBitmapFontEditor() {
           )}
 
           {initialFontLoading && !ready && (
-            <p style={{ fontSize: 14, color: textMuted, lineHeight: 1.55, margin: '0 0 8px' }}>Loading example font…</p>
+            <div
+              className="toolkit-loading toolkit-loading--inline"
+              role="status"
+              aria-live="polite"
+              style={{ fontSize: 14, color: textMuted, lineHeight: 1.55, margin: '0 0 8px' }}
+            >
+              <div className="toolkit-loading__spinner toolkit-loading__spinner--sm" aria-hidden="true" />
+              <span>Loading example font…</span>
+            </div>
           )}
 
           {!hasXml && !texUrl && !initialFontLoading && (

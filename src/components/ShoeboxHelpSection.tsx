@@ -1,8 +1,100 @@
 'use client'
 
-import React from 'react'
+import React, { useEffect, useRef, useState } from 'react'
 
 import { withBasePath } from '@/lib/withBasePath'
+
+type DeferredHelpVideoProps = {
+  src: string
+  ariaLabel: string
+  openLinkLabel: string
+  videoStyle: React.CSSProperties
+  videoFallbackStyle: React.CSSProperties
+  linkStyle: React.CSSProperties
+  text: string
+  textMuted: string
+  panelBorder: string
+  darkTheme: boolean
+}
+
+function DeferredHelpVideo({
+  src,
+  ariaLabel,
+  openLinkLabel,
+  videoStyle,
+  videoFallbackStyle,
+  linkStyle,
+  text,
+  textMuted,
+  panelBorder,
+  darkTheme,
+}: DeferredHelpVideoProps) {
+  const [active, setActive] = useState(false)
+  const videoRef = useRef<HTMLVideoElement>(null)
+
+  useEffect(() => {
+    if (!active) return
+    const el = videoRef.current
+    if (!el) return
+    void el.play().catch(() => {})
+  }, [active])
+
+  const buttonBg = darkTheme ? '#334155' : '#e5e7eb'
+  const placeholderStyle: React.CSSProperties = {
+    ...videoStyle,
+    boxSizing: 'border-box',
+    minHeight: 200,
+    aspectRatio: '16 / 9',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    cursor: 'pointer',
+    fontFamily: 'inherit',
+    fontSize: 14,
+    fontWeight: 600,
+    color: text,
+    background: buttonBg,
+    border: `1px solid ${panelBorder}`,
+  }
+
+  if (!active) {
+    return (
+      <button
+        type="button"
+        style={placeholderStyle}
+        onClick={() => setActive(true)}
+        aria-label={`Load and play walkthrough: ${ariaLabel}`}
+      >
+        <span style={{ textAlign: 'center', lineHeight: 1.45, padding: '0 12px' }}>
+          Play walkthrough
+          <span style={{ display: 'block', fontSize: 12, fontWeight: 500, color: textMuted, marginTop: 6 }}>
+            Loads the video when you choose (saves bandwidth).
+          </span>
+        </span>
+      </button>
+    )
+  }
+
+  return (
+    <video
+      ref={videoRef}
+      controls
+      playsInline
+      preload="none"
+      style={videoStyle}
+      src={src}
+      aria-label={ariaLabel}
+    >
+      <span style={videoFallbackStyle}>
+        This browser cannot play the embedded video.{' '}
+        <a href={src} target="_blank" rel="noopener noreferrer" style={linkStyle}>
+          {openLinkLabel}
+        </a>
+        .
+      </span>
+    </video>
+  )
+}
 
 type ShoeboxHelpSectionProps = {
   darkTheme: boolean
@@ -86,41 +178,33 @@ export function ShoeboxHelpSection({ darkTheme, text, textMuted, inputBorder, pa
       </p>
       <figure style={figureVideoStyle}>
         <figcaption style={figcaptionStyle}>Inspect and modify an existing bitmap font (BMFont XML + atlas)</figcaption>
-        <video
-          controls
-          playsInline
-          preload="metadata"
-          style={videoStyle}
+        <DeferredHelpVideo
           src={inspectTutorialMp4}
-          aria-label="Screencast: inspect and modify an existing bitmap font"
-        >
-          <span style={videoFallbackStyle}>
-            This browser cannot play the embedded video.{' '}
-            <a href={inspectTutorialMp4} target="_blank" rel="noopener noreferrer" style={linkStyle}>
-              Open inspect-modify.mp4 in a new tab
-            </a>
-            .
-          </span>
-        </video>
+          ariaLabel="Screencast: inspect and modify an existing bitmap font"
+          openLinkLabel="Open inspect-modify.mp4 in a new tab"
+          videoStyle={videoStyle}
+          videoFallbackStyle={videoFallbackStyle}
+          linkStyle={linkStyle}
+          text={text}
+          textMuted={textMuted}
+          panelBorder={panelBorder}
+          darkTheme={darkTheme}
+        />
       </figure>
       <figure style={figureVideoStyle}>
         <figcaption style={figcaptionStyle}>Create new BMFont XML from a styled charset PNG</figcaption>
-        <video
-          controls
-          playsInline
-          preload="metadata"
-          style={videoStyle}
+        <DeferredHelpVideo
           src={createFromPngMp4}
-          aria-label="Screencast: create BMFont XML from a PNG"
-        >
-          <span style={videoFallbackStyle}>
-            This browser cannot play the embedded video.{' '}
-            <a href={createFromPngMp4} target="_blank" rel="noopener noreferrer" style={linkStyle}>
-              Open create-from-png.mp4 in a new tab
-            </a>
-            .
-          </span>
-        </video>
+          ariaLabel="Screencast: create BMFont XML from a PNG"
+          openLinkLabel="Open create-from-png.mp4 in a new tab"
+          videoStyle={videoStyle}
+          videoFallbackStyle={videoFallbackStyle}
+          linkStyle={linkStyle}
+          text={text}
+          textMuted={textMuted}
+          panelBorder={panelBorder}
+          darkTheme={darkTheme}
+        />
       </figure>
 
       <h2 style={h2}>What this tool is</h2>
