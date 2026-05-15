@@ -5,14 +5,20 @@ import { createPortal } from 'react-dom'
 import { useSearchParams } from 'next/navigation'
 
 import {
+  addChar,
   addKerning,
   bitmapFontDiagnostics,
   charAtlasPage,
+  defaultCharForId,
+  semanticDiffBitmapFont,
+  semanticDiffBitmapFontHasChanges,
   detectIndentFromXml,
   parseBitmapFont,
   patchChar,
   patchCharById,
   patchKerning,
+  removeCharAt,
+  removeCharsAt,
   removeKerningAt,
   serializeBitmapFontText,
   serializeBitmapFontXml,
@@ -33,7 +39,11 @@ import { BitmapFontKerningEditor, type BitmapFontKerningEditorHandle } from '@/l
 import { BitmapFontPreview } from '@/lib/bitmapFont/BitmapFontPreview'
 import { BitmapFontTextureView } from '@/lib/bitmapFont/BitmapFontTextureView'
 import type { BitmapFontChar, BitmapFontModel } from '@/lib/bitmapFont/types'
-import type { BitmapFontDiagnosticTarget, BitmapFontDiagnosticLevel } from '@/lib/bitmapFont'
+import type {
+  BitmapFontDiagnosticTarget,
+  BitmapFontDiagnosticLevel,
+  BitmapFontSemanticDiff,
+} from '@/lib/bitmapFont'
 import { defaultBitmapFontModel, globalXAdvanceValue } from '@/lib/bitmapFont/types'
 import { isBitmapFontXmlString } from '@/lib/bitmapFont/isBitmapFontXml'
 import { charsetStripToModel } from '@/lib/bitmapFont/charsetStripToModel'
@@ -235,6 +245,327 @@ function readShowAtlasRectColsFromStorage(): boolean | null {
   }
 }
 
+type ShoeboxBitmapFontSemanticDiffSectionProps = {
+  semanticDiff: BitmapFontSemanticDiff
+  semanticDiffHasAny: boolean
+  semanticDiffReferenceLabel: string
+  semanticDiffOpen: boolean
+  setSemanticDiffOpen: React.Dispatch<React.SetStateAction<boolean>>
+  darkTheme: boolean
+  panelChrome: React.CSSProperties
+  sectionTitle: React.CSSProperties
+  subsectionLabel: React.CSSProperties
+  inputBorder: string
+  text: string
+  textMuted: string
+  applyDiagnosticTarget: (target: BitmapFontDiagnosticTarget) => void
+}
+
+function ShoeboxBitmapFontSemanticDiffSection({
+  semanticDiff,
+  semanticDiffHasAny,
+  semanticDiffReferenceLabel,
+  semanticDiffOpen,
+  setSemanticDiffOpen,
+  darkTheme,
+  panelChrome,
+  sectionTitle,
+  subsectionLabel,
+  inputBorder,
+  text,
+  textMuted,
+  applyDiagnosticTarget,
+}: ShoeboxBitmapFontSemanticDiffSectionProps) {
+  return (
+    <section
+      style={{ ...panelChrome, marginTop: 16, scrollMarginTop: 12 }}
+      aria-labelledby="semantic-diff-heading"
+    >
+      <h2 id="semantic-diff-heading" style={sectionTitle}>
+        Semantic diff
+        {semanticDiffHasAny ? (
+          <span style={{ fontWeight: 600, color: '#ca8a04', marginLeft: 8 }}>(changes)</span>
+        ) : null}
+      </h2>
+      <p style={{ ...subsectionLabel, marginBottom: 12 }}>
+        Current edits vs reference <strong style={{ color: text }}>{semanticDiffReferenceLabel}</strong> — usually the{' '}
+        <strong style={{ color: text }}>loaded baseline</strong> (last import or generator). Turn on{' '}
+        <strong style={{ color: text }}>Compare with another open font</strong> in Preview guides above to diff against that
+        slot&apos;s stored snapshot instead. <strong style={{ color: text }}>Compare to loaded</strong> only adds the extra Pixi
+        column; it does not change this reference. Expand for glyph metrics (
+        <code style={{ fontFamily: 'monospace', fontSize: 11 }}>xoffset</code>,{' '}
+        <code style={{ fontFamily: 'monospace', fontSize: 11 }}>yoffset</code>,{' '}
+        <code style={{ fontFamily: 'monospace', fontSize: 11 }}>xadvance</code>,{' '}
+        <code style={{ fontFamily: 'monospace', fontSize: 11 }}>width</code>,{' '}
+        <code style={{ fontFamily: 'monospace', fontSize: 11 }}>height</code>) and kerning drift. Values are{' '}
+        <strong>reference → current</strong>.
+      </p>
+      <button
+        type="button"
+        onClick={() => setSemanticDiffOpen((o) => !o)}
+        aria-expanded={semanticDiffOpen}
+        aria-controls="semantic-diff-panel"
+        style={{
+          width: '100%',
+          textAlign: 'left',
+          cursor: 'pointer',
+          background: darkTheme ? 'rgba(15, 23, 42, 0.35)' : '#f3f4f6',
+          border: `1px solid ${inputBorder}`,
+          borderRadius: 8,
+          padding: '10px 12px',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          gap: 8,
+          fontSize: 13,
+          fontWeight: 600,
+          color: text,
+          marginBottom: semanticDiffOpen ? 10 : 0,
+        }}
+      >
+        <span>{semanticDiffOpen ? 'Hide detail lists' : 'Show detail lists'}</span>
+        <span style={{ fontSize: 11, fontWeight: 600, color: textMuted }}>
+          {semanticDiffOpen ? '▼' : '▶'}
+        </span>
+      </button>
+      {semanticDiffOpen && (
+        <div
+          id="semantic-diff-panel"
+          role="region"
+          aria-label="Glyph and kerning comparison to reference snapshot"
+          style={{ fontSize: 12, lineHeight: 1.45, color: text }}
+        >
+          {!semanticDiffHasAny ? (
+            <p style={{ margin: 0, color: textMuted }}>No glyph or kerning differences.</p>
+          ) : (
+            <>
+              {(() => {
+                const cap = 80
+                const jumpBtnStyle: React.CSSProperties = {
+                  fontSize: 11,
+                  fontWeight: 600,
+                  padding: '4px 10px',
+                  cursor: 'pointer',
+                  borderRadius: 6,
+                  border: `1px solid ${inputBorder}`,
+                  background: darkTheme ? '#334155' : '#e5e7eb',
+                  color: text,
+                  flexShrink: 0,
+                }
+                const rowStyle: React.CSSProperties = {
+                  marginBottom: 8,
+                  display: 'flex',
+                  flexWrap: 'wrap',
+                  alignItems: 'flex-start',
+                  gap: 8,
+                }
+                const listBox: React.CSSProperties = {
+                  margin: '6px 0 0',
+                  paddingLeft: 0,
+                  listStyle: 'none',
+                  maxHeight: 220,
+                  overflow: 'auto',
+                }
+                const ch = semanticDiff.charFieldChanges
+                const chShown = ch.slice(0, cap)
+                const onlyR = semanticDiff.charsOnlyInReference
+                const onlyRShown = onlyR.slice(0, cap)
+                const onlyC = semanticDiff.charsOnlyInCurrent
+                const onlyCShown = onlyC.slice(0, cap)
+                const kR = semanticDiff.kerningsOnlyInReference
+                const kRShown = kR.slice(0, cap)
+                const kC = semanticDiff.kerningsOnlyInCurrent
+                const kCShown = kC.slice(0, cap)
+                const kD = semanticDiff.kerningsAmountDiffer
+                const kDShown = kD.slice(0, cap)
+                return (
+                  <>
+                    {ch.length > 0 && (
+                      <div style={{ marginBottom: 14 }}>
+                        <div style={{ fontWeight: 600, color: textMuted, fontSize: 11 }}>
+                          Glyph metric changes ({ch.length})
+                        </div>
+                        {ch.length > cap && (
+                          <p style={{ margin: '4px 0 0', fontSize: 11, color: textMuted }}>
+                            Showing first {cap} of {ch.length}.
+                          </p>
+                        )}
+                        <ul style={listBox}>
+                          {chShown.map((row) => (
+                            <li key={`sd-ch-${row.id}`} style={rowStyle}>
+                              <span style={{ flex: '1 1 200px', minWidth: 0 }}>
+                                <code style={{ fontFamily: 'monospace', fontSize: 11 }}>
+                                  U+{row.id.toString(16).toUpperCase().padStart(4, '0')}
+                                </code>{' '}
+                                <span style={{ color: textMuted }}>{glyphLabelForCode(row.id)}</span>
+                                {' — '}
+                                {row.changes.map((c, i) => (
+                                  <span key={`${row.id}-${c.field}-${i}`}>
+                                    {i > 0 ? '; ' : null}
+                                    <code style={{ fontFamily: 'monospace', fontSize: 11 }}>{c.field}</code>{' '}
+                                    {c.reference}→{c.current}
+                                  </span>
+                                ))}
+                              </span>
+                              <button
+                                type="button"
+                                onClick={() => applyDiagnosticTarget({ kind: 'char', id: row.id })}
+                                style={jumpBtnStyle}
+                              >
+                                Jump
+                              </button>
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+                    {onlyR.length > 0 && (
+                      <div style={{ marginBottom: 14 }}>
+                        <div style={{ fontWeight: 600, color: textMuted, fontSize: 11 }}>
+                          Glyphs only in reference ({onlyR.length})
+                        </div>
+                        {onlyR.length > cap && (
+                          <p style={{ margin: '4px 0 0', fontSize: 11, color: textMuted }}>
+                            Showing first {cap} of {onlyR.length}.
+                          </p>
+                        )}
+                        <ul style={listBox}>
+                          {onlyRShown.map((id) => (
+                            <li key={`sd-or-${id}`} style={{ ...rowStyle, color: textMuted }}>
+                              <span style={{ flex: '1 1 200px', minWidth: 0 }}>
+                                <code style={{ fontFamily: 'monospace', fontSize: 11 }}>
+                                  U+{id.toString(16).toUpperCase().padStart(4, '0')}
+                                </code>{' '}
+                                {glyphLabelForCode(id)}
+                              </span>
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+                    {onlyC.length > 0 && (
+                      <div style={{ marginBottom: 14 }}>
+                        <div style={{ fontWeight: 600, color: textMuted, fontSize: 11 }}>
+                          Glyphs only in current ({onlyC.length})
+                        </div>
+                        {onlyC.length > cap && (
+                          <p style={{ margin: '4px 0 0', fontSize: 11, color: textMuted }}>
+                            Showing first {cap} of {onlyC.length}.
+                          </p>
+                        )}
+                        <ul style={listBox}>
+                          {onlyCShown.map((id) => (
+                            <li key={`sd-oc-${id}`} style={rowStyle}>
+                              <span style={{ flex: '1 1 200px', minWidth: 0 }}>
+                                <code style={{ fontFamily: 'monospace', fontSize: 11 }}>
+                                  U+{id.toString(16).toUpperCase().padStart(4, '0')}
+                                </code>{' '}
+                                <span style={{ color: textMuted }}>{glyphLabelForCode(id)}</span>
+                              </span>
+                              <button
+                                type="button"
+                                onClick={() => applyDiagnosticTarget({ kind: 'char', id })}
+                                style={jumpBtnStyle}
+                              >
+                                Jump
+                              </button>
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+                    {kR.length > 0 && (
+                      <div style={{ marginBottom: 14 }}>
+                        <div style={{ fontWeight: 600, color: textMuted, fontSize: 11 }}>
+                          Kerning rows only in reference ({kR.length})
+                        </div>
+                        {kR.length > cap && (
+                          <p style={{ margin: '4px 0 0', fontSize: 11, color: textMuted }}>
+                            Showing first {cap} of {kR.length}.
+                          </p>
+                        )}
+                        <ul style={listBox}>
+                          {kRShown.map((k) => (
+                            <li key={`sd-kr-${k.first}-${k.second}`} style={{ ...rowStyle, color: textMuted }}>
+                              <span style={{ flex: '1 1 240px', minWidth: 0 }}>
+                                {glyphLabelForCode(k.first)} → {glyphLabelForCode(k.second)} — amount {k.amount}
+                              </span>
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+                    {kC.length > 0 && (
+                      <div style={{ marginBottom: 14 }}>
+                        <div style={{ fontWeight: 600, color: textMuted, fontSize: 11 }}>
+                          Kerning rows only in current ({kC.length})
+                        </div>
+                        {kC.length > cap && (
+                          <p style={{ margin: '4px 0 0', fontSize: 11, color: textMuted }}>
+                            Showing first {cap} of {kC.length}.
+                          </p>
+                        )}
+                        <ul style={listBox}>
+                          {kCShown.map((k) => (
+                            <li key={`sd-kc-${k.first}-${k.second}`} style={rowStyle}>
+                              <span style={{ flex: '1 1 240px', minWidth: 0 }}>
+                                {glyphLabelForCode(k.first)} → {glyphLabelForCode(k.second)} — amount {k.amount}
+                              </span>
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  applyDiagnosticTarget({ kind: 'kerning', first: k.first, second: k.second })
+                                }
+                                style={jumpBtnStyle}
+                              >
+                                Jump
+                              </button>
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+                    {kD.length > 0 && (
+                      <div style={{ marginBottom: 0 }}>
+                        <div style={{ fontWeight: 600, color: textMuted, fontSize: 11 }}>
+                          Kerning amount differs ({kD.length})
+                        </div>
+                        {kD.length > cap && (
+                          <p style={{ margin: '4px 0 0', fontSize: 11, color: textMuted }}>
+                            Showing first {cap} of {kD.length}.
+                          </p>
+                        )}
+                        <ul style={listBox}>
+                          {kDShown.map((k) => (
+                            <li key={`sd-kd-${k.first}-${k.second}`} style={rowStyle}>
+                              <span style={{ flex: '1 1 240px', minWidth: 0 }}>
+                                {glyphLabelForCode(k.first)} → {glyphLabelForCode(k.second)} — {k.reference}→{k.current}
+                              </span>
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  applyDiagnosticTarget({ kind: 'kerning', first: k.first, second: k.second })
+                                }
+                                style={jumpBtnStyle}
+                              >
+                                Jump
+                              </button>
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+                  </>
+                )
+              })()}
+            </>
+          )}
+        </div>
+      )}
+    </section>
+  )
+}
+
 export default function ShoeboxBitmapFontEditor() {
   const searchParams = useSearchParams()
 
@@ -401,6 +732,7 @@ export default function ShoeboxBitmapFontEditor() {
   const [exportFileName, setExportFileName] = useState('font.xml')
   const [showHelp, setShowHelp] = useState(false)
   const [diagnosticsOpen, setDiagnosticsOpen] = useState(true)
+  const [semanticDiffOpen, setSemanticDiffOpen] = useState(false)
   const [roundTripNote, setRoundTripNote] = useState<string | null>(null)
   const [sessionOffer, setSessionOffer] = useState<BitmapFontSessionRecordV2 | null>(null)
 
@@ -546,6 +878,12 @@ export default function ShoeboxBitmapFontEditor() {
   )
 
   const compareRightPanelVisible = comparePixiToBaseline || compareWithOpenSlotId != null
+
+  useEffect(() => {
+    if (!comparePixiToBaseline && compareWithOpenSlotId == null) {
+      setSemanticDiffOpen(false)
+    }
+  }, [comparePixiToBaseline, compareWithOpenSlotId])
 
   useEffect(() => {
     if (workspaceSlotsForSelect.length <= 1 && compareWithOpenSlotId != null) {
@@ -759,6 +1097,23 @@ export default function ShoeboxBitmapFontEditor() {
     }
     return { errors, warnings, infos }
   }, [diagnostics])
+
+  const semanticDiffReferenceModel =
+    compareWithOpenSlotId != null && compareOpenLiveModel != null ? compareOpenLiveModel : baselineModel
+
+  const semanticDiffReferenceLabel =
+    compareWithOpenSlotId != null && compareOpenLiveModel != null
+      ? `Open font: ${compareOpenSlotSnapshot?.label ?? 'slot'}`
+      : compareWithOpenSlotId != null
+        ? 'Open font (no snapshot)'
+        : 'Loaded (last import / generator)'
+
+  const semanticDiff = useMemo(
+    () => semanticDiffBitmapFont(model, semanticDiffReferenceModel),
+    [model, semanticDiffReferenceModel]
+  )
+
+  const semanticDiffHasAny = semanticDiffBitmapFontHasChanges(semanticDiff)
 
   const pixiPreviewHostBg = useMemo(() => (darkTheme ? '#0f172a' : '#ffffff'), [darkTheme])
 
@@ -1707,6 +2062,37 @@ export default function ShoeboxBitmapFontEditor() {
   const patchCharAt = useCallback((index: number, patch: Partial<BitmapFontChar>) => {
     setModel((prev) => patchChar(prev, index, patch))
   }, [setModel])
+
+  const addCharById = useCallback((id: number) => {
+    setModel((prev) => addChar(prev, defaultCharForId(id)))
+    // Scroll + select after the state flush
+    requestAnimationFrame(() => {
+      charTableRef.current?.scrollToCharId(id)
+      setSelectedCharId(id)
+    })
+  }, [setModel])
+
+  const removeCharAtIndex = useCallback((index: number) => {
+    setModel((prev) => {
+      const removedId = prev.chars[index]?.id
+      const next = removeCharAt(prev, index)
+      if (removedId != null && selectedCharId === removedId) {
+        setSelectedCharId(null)
+      }
+      return next
+    })
+  }, [setModel, selectedCharId])
+
+  const removeCharIndices = useCallback((indices: number[]) => {
+    setModel((prev) => {
+      const removedIds = new Set(indices.map((i) => prev.chars[i]?.id).filter((id): id is number => id != null))
+      const next = removeCharsAt(prev, indices)
+      if (selectedCharId != null && removedIds.has(selectedCharId)) {
+        setSelectedCharId(null)
+      }
+      return next
+    })
+  }, [setModel, selectedCharId])
 
   const bulkCharDelta = useCallback(
     (indices: number[], delta: { dx?: number; dy?: number; xoffset?: number; yoffset?: number; xadvance?: number }) => {
@@ -2903,6 +3289,24 @@ export default function ShoeboxBitmapFontEditor() {
               </div>
             </section>
 
+            {compareRightPanelVisible && (
+              <ShoeboxBitmapFontSemanticDiffSection
+                semanticDiff={semanticDiff}
+                semanticDiffHasAny={semanticDiffHasAny}
+                semanticDiffReferenceLabel={semanticDiffReferenceLabel}
+                semanticDiffOpen={semanticDiffOpen}
+                setSemanticDiffOpen={setSemanticDiffOpen}
+                darkTheme={darkTheme}
+                panelChrome={panelChrome}
+                sectionTitle={sectionTitle}
+                subsectionLabel={subsectionLabel}
+                inputBorder={inputBorder}
+                text={text}
+                textMuted={textMuted}
+                applyDiagnosticTarget={applyDiagnosticTarget}
+              />
+            )}
+
             <section style={panelChrome} aria-labelledby="font-metadata-heading">
               <h2 id="font-metadata-heading" style={sectionTitle}>
                 Font metadata
@@ -3161,28 +3565,52 @@ export default function ShoeboxBitmapFontEditor() {
                             .join(', ')}
                         </p>
                       )}
-                      <button
-                        type="button"
-                        disabled={coverageReport.missing.length === 0}
-                        onClick={() => {
-                          const id = coverageReport.missing[0]
-                          if (id == null) return
-                          charTableRef.current?.setFilterText(`U+${id.toString(16).toUpperCase()}`)
-                        }}
-                        style={{
-                          fontSize: 11,
-                          fontWeight: 600,
-                          padding: '4px 10px',
-                          cursor: coverageReport.missing.length === 0 ? 'not-allowed' : 'pointer',
-                          opacity: coverageReport.missing.length === 0 ? 0.5 : 1,
-                          borderRadius: 6,
-                          border: `1px solid ${inputBorder}`,
-                          background: darkTheme ? '#334155' : '#e5e7eb',
-                          color: text,
-                        }}
-                      >
-                        Filter first missing in character table
-                      </button>
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                        <button
+                          type="button"
+                          disabled={coverageReport.missing.length === 0}
+                          onClick={() => {
+                            const id = coverageReport.missing[0]
+                            if (id == null) return
+                            charTableRef.current?.setFilterText(`U+${id.toString(16).toUpperCase()}`)
+                          }}
+                          style={{
+                            fontSize: 11,
+                            fontWeight: 600,
+                            padding: '4px 10px',
+                            cursor: coverageReport.missing.length === 0 ? 'not-allowed' : 'pointer',
+                            opacity: coverageReport.missing.length === 0 ? 0.5 : 1,
+                            borderRadius: 6,
+                            border: `1px solid ${inputBorder}`,
+                            background: darkTheme ? '#334155' : '#e5e7eb',
+                            color: text,
+                          }}
+                        >
+                          Filter first missing in character table
+                        </button>
+                        <button
+                          type="button"
+                          disabled={coverageReport.missing.length === 0}
+                          onClick={() => {
+                            const id = coverageReport.missing[0]
+                            if (id == null) return
+                            addCharById(id)
+                          }}
+                          style={{
+                            fontSize: 11,
+                            fontWeight: 600,
+                            padding: '4px 10px',
+                            cursor: coverageReport.missing.length === 0 ? 'not-allowed' : 'pointer',
+                            opacity: coverageReport.missing.length === 0 ? 0.5 : 1,
+                            borderRadius: 6,
+                            border: `1px solid ${inputBorder}`,
+                            background: darkTheme ? '#065f46' : '#d1fae5',
+                            color: darkTheme ? '#6ee7b7' : '#065f46',
+                          }}
+                        >
+                          Add first missing glyph
+                        </button>
+                      </div>
                     </>
                   )}
                 </div>
@@ -3191,13 +3619,8 @@ export default function ShoeboxBitmapFontEditor() {
             <section
               style={{
                 ...panelChrome,
-                ...(!stackPreviews
-                  ? {
-                      position: 'sticky',
-                      top: 8,
-                      zIndex: 5,
-                    }
-                  : {}),
+                // Sticky keeps the preview handy while editing; z-index lifts it above sibling sections while scrolling.
+                ...(!stackPreviews ? { position: 'sticky', top: 8, zIndex: 10 } : {}),
               }}
               aria-labelledby="atlas-preview-heading"
             >
@@ -3570,6 +3993,9 @@ export default function ShoeboxBitmapFontEditor() {
                   onPatch={patchCharAt}
                   onBulkDelta={bulkCharDelta}
                   onBulkPreset={bulkCharPreset}
+                  onAdd={addCharById}
+                  onRemove={removeCharAtIndex}
+                  onRemoveIndices={removeCharIndices}
                   showAtlasRectColumns={showAtlasRectColumns}
                   darkTheme={darkTheme}
                   text={text}
@@ -3733,6 +4159,7 @@ export default function ShoeboxBitmapFontEditor() {
                 </div>
               )}
             </section>
+
 
             {/* Save/export only when serialized XML differs from last load or download baseline. */}
             {hasXml && (

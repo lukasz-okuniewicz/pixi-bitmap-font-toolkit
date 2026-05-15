@@ -211,9 +211,10 @@ export function ShoeboxHelpSection({ darkTheme, text, textMuted, inputBorder, pa
       <p style={p}>
         <strong>Bitmap Font Toolkit</strong> is a browser-based <strong>bitmap font multitool</strong> for the BMFont XML format. On each visit it loads a small{' '}
         <strong>bundled example</strong> BMFont (XML + PNG from the site) so you can explore the UI immediately; use <strong>Upload font files</strong> (or the
-        other import tabs) to replace it for the current browser session. You can upload an existing <strong>font descriptor</strong> (XML or plain{' '}
-        <code style={codeStyle}>.fnt</code>) plus an <strong>atlas image</strong> (usually PNG), <em>or</em> generate a starter descriptor from a{' '}
-        <strong>styled charset image</strong> (Shoebox-style) or by <strong>rasterizing a .ttf/.otf</strong> in the browser. The app parses or builds the model,
+        other import tabs) to replace it for the current browser session. You can upload an existing <strong>font descriptor</strong> (BMFont XML, ASCII{' '}
+        <code style={codeStyle}>.fnt</code>, or binary AngelCode BMF v3) plus an <strong>atlas image</strong> (usually PNG), <em>or</em> generate a starter descriptor from a{' '}
+        <strong>styled charset image</strong> (Shoebox-style) or by <strong>rasterizing a browser-loadable font</strong> (<code style={codeStyle}>.ttf</code>,{' '}
+        <code style={codeStyle}>.otf</code>, <code style={codeStyle}>.woff</code>, <code style={codeStyle}>.woff2</code>) in the browser. The app parses or builds the model,
         lets you inspect and edit metrics, previews with <strong>Pixi.js</strong> the same way <code style={codeStyle}>BitmapText</code> +{' '}
         <code style={codeStyle}>BitmapFont.install</code> would in a game, and exports updated XML. Nothing is uploaded to a server; everything runs locally.
       </p>
@@ -231,10 +232,12 @@ export function ShoeboxHelpSection({ darkTheme, text, textMuted, inputBorder, pa
           The tool finds glyph boxes from alpha and writes <code style={codeStyle}>&lt;char&gt;</code> entries. Glows or tight pairs can merge regions; fix
           rectangles in the texture editor afterward. If your charset does not include <strong>space</strong> (U+0020), one is appended automatically so the XML
           always has a space glyph. <strong>Space</strong> is never sliced from ink: it uses a 1×1 atlas anchor and the <strong>space xadvance</strong> value you set.
+          Optional <strong>Detect comma vs period from ink</strong> swaps comma (U+002C) and period (U+002E) when glyph ink shape disagrees with charset order.
         </li>
         <li style={{ marginBottom: 8 }}>
-          <strong>Raster from font file</strong> — Pick a <code style={codeStyle}>.ttf</code> or <code style={codeStyle}>.otf</code> the browser can load via{' '}
-          <code style={codeStyle}>FontFace</code>, enter a charset and size, then <strong>Generate atlas + XML</strong>. A new PNG atlas is packed in rows
+          <strong>Raster from font file</strong> — Pick a <code style={codeStyle}>.ttf</code>, <code style={codeStyle}>.otf</code>, <code style={codeStyle}>.woff</code>, or{' '}
+          <code style={codeStyle}>.woff2</code> the browser can load via <code style={codeStyle}>FontFace</code>, enter a charset and size, then{' '}
+          <strong>Generate atlas + XML</strong>. A new PNG atlas is packed in rows
           (max width you choose). Duplicate characters in the charset are deduplicated (one glyph per code point). Respect the font&apos;s license; complex
           scripts (Arabic shaping, etc.) are not targeted—Latin-style glyphs work best.
         </li>
@@ -247,13 +250,29 @@ export function ShoeboxHelpSection({ darkTheme, text, textMuted, inputBorder, pa
       <h2 style={h2}>Typical workflow</h2>
       <ol style={{ ...ul, listStyleType: 'decimal' }}>
         <li style={{ marginBottom: 6 }}>
-          The editor opens with the bundled example font. Under <strong>BMFont files (default)</strong>, click <strong>Upload font files</strong> when you want
-          your own XML or .fnt plus atlas (multi-select or one at a time). Refreshing the page restores the example.
+          Each visit starts by loading the <strong>bundled example</strong> font so the UI is never empty. If a <strong>Previous session found</strong> banner
+          appears, <strong>Restore</strong> replaces that example with your auto-saved work (which can include several fonts under <strong>Open fonts</strong>).
+          <strong> Dismiss</strong> keeps the example for now and hides that snapshot until a newer auto-save; <strong>Clear stored session</strong> deletes the
+          saved data from this browser. Under <strong>BMFont files (default)</strong>, click <strong>Upload font files</strong> for your own XML, text .fnt, or binary BMF plus
+          atlas (multi-select or one at a time).
+        </li>
+        <li style={{ marginBottom: 6 }}>
+          When more than one font is kept, use the <strong>Open fonts</strong> control under <strong>Load font</strong> to switch the active slot. A{' '}
+          <code style={codeStyle}>*</code> next to a name marks unsaved edits for that slot (relative to the last download or saved baseline for that font).
         </li>
         <li style={{ marginBottom: 6 }}>Confirm the texture and Live previews look correct.</li>
-        <li style={{ marginBottom: 6 }}>Adjust global fields (<code style={codeStyle}>face</code>, <code style={codeStyle}>lineHeight</code>, etc.) and glyph rows as needed.</li>
+        <li style={{ marginBottom: 6 }}>Adjust <strong>Font metadata</strong> (<code style={codeStyle}>face</code>, <code style={codeStyle}>lineHeight</code>, etc.) and glyph rows as needed.</li>
         <li style={{ marginBottom: 6 }}>Use <strong>Download XML</strong> to save. Until you download, edits are only in memory (&quot;Unsaved edits&quot;).</li>
       </ol>
+
+      <h2 style={h2}>Multiple open fonts</h2>
+      <p style={p}>
+        Starting another full import or generator run <strong>archives</strong> the font you were editing and opens a <strong>new slot</strong> for the new
+        result—for example uploading a different BMFont (first descriptor in the selection triggers archive once), running{' '}
+        <strong>Build BMFont from styled image</strong>, or <strong>Generate atlas + XML</strong> from the raster tab. Previous slots stay in memory (and in
+        auto-saved session data) with their own undo history, baseline snapshot, export names, and atlas images. Use <strong>Open fonts</strong> to switch between
+        them; use <strong>Clear stored session</strong> on the restore banner when you want to drop every saved slot from this browser.
+      </p>
 
       <h2 style={h2}>For designers</h2>
       <p style={p}>
@@ -284,54 +303,43 @@ export function ShoeboxHelpSection({ darkTheme, text, textMuted, inputBorder, pa
         <code style={codeStyle}>&lt;font&gt;</code> are not preserved—reintroduce them in your pipeline if you rely on them.
       </p>
 
-      <h2 style={h2}>Toolbar controls</h2>
+      <h2 style={h2}>Save, export &amp; editor shortcuts</h2>
+      <p style={p}>
+        <strong>Download XML</strong>, <strong>Download ZIP</strong>, <strong>Download .fnt</strong>, <strong>Download binary .fnt</strong>, and{' '}
+        <strong>Export name</strong> live in the bottom <strong>Save &amp; export</strong> section (labeled <strong>unsaved edits</strong> when the model differs
+        from your last download or import baseline). ZIP bundles the XML plus each atlas page image readable from this session (paths match{' '}
+        <code style={codeStyle}>&lt;page file=&quot;…&quot;&gt;</code> names). Binary export is AngelCode BMF v3 for runtimes that expect binary BMFont.
+      </p>
+      <p style={p}>
+        Preview overlays—<strong>Baseline</strong>, <strong>Anchor Y (0.5)</strong>, <strong>Glyph outlines</strong>, <strong>Advance bars</strong>,{' '}
+        <strong>Compare to loaded</strong>, <strong>Compare with another open font</strong>, and <strong>Auto center Y</strong>—are under{' '}
+        <strong>Preview guides &amp; metrics assist</strong> (above the Live preview panels).
+      </p>
       <ul style={ul}>
         <li>
-          <strong>Download XML</strong> — Exports the current BMFont XML and marks the in-memory snapshot as saved.
-        </li>
-        <li>
-          <strong>Download ZIP</strong> — Packages the current XML plus each atlas page image that can be read from this session (same folder layout as{' '}
-          <code style={codeStyle}>&lt;page file=&quot;…&quot;&gt;</code> names).
-        </li>
-        <li>
-          <strong>Download .fnt</strong> — BMFont ASCII text format with the same metrics as the XML export.
-        </li>
-        <li>
-          <strong>Download binary .fnt</strong> — AngelCode BMF version 3 binary; use when your runtime expects binary BMFont instead of ASCII lines.
-        </li>
-        <li>
-          <strong>Verify XML round-trip</strong> — In Diagnostics, checks parse → serialize → parse for structural drift (glyph ids, counts, kernings, common scale fields).
-        </li>
-        <li>
           <strong>Undo / Redo</strong> — <kbd style={codeStyle}>⌘</kbd>/<kbd style={codeStyle}>Ctrl</kbd>+<kbd style={codeStyle}>Z</kbd> undo,{' '}
-          <kbd style={codeStyle}>⇧⌘Z</kbd> / <kbd style={codeStyle}>⌘Y</kbd> redo (disabled while typing in inputs). Numeric fields and some text fields also show a small <strong>↺</strong> control to restore that field to the value from the <strong>last import or generator</strong> (not the same as undo).
+          <kbd style={codeStyle}>⇧⌘Z</kbd> / <kbd style={codeStyle}>⌘Y</kbd> redo (disabled while typing in inputs). Numeric fields support{' '}
+          <strong>click-drag left/right</strong> to scrub values (a small movement still allows normal typing). A <strong>↺</strong> control on a field restores
+          that field to the value from the <strong>last import or generator</strong> (not the same as undo).
         </li>
         <li>
-          <strong>Session restore</strong> — The app may offer to restore a previous session from browser storage (includes your font data locally — treat as sensitive).
-        </li>
-        <li>
-          <strong>Baseline</strong> — Draws a red guide at an approximate first-line baseline in the Live preview (uses bounds + <code style={codeStyle}>
-            lineHeight
-          </code>
-          ).
-        </li>
-        <li>
-          <strong>Anchor Y (0.5)</strong> — Cyan line at <code style={codeStyle}>BitmapText.y</code>; the preview uses <code style={codeStyle}>anchor.y = 0.5</code>{' '}
-          and centers vertically in the panel so you can judge vertical balance.
-        </li>
-        <li>
-          <strong>Auto center Y</strong> — Adds the same <code style={codeStyle}>yoffset</code> delta to <em>every</em> glyph so the preview string’s bounding
-          box centers on that anchor line (good for batch nudging; re-run after big edits if needed).
-        </li>
-        <li>
-          <strong>Glyph outlines</strong> — Overlays rectangles from the character table on the atlas view.
-        </li>
-        <li>
-          <strong>Export name</strong> — Suggested filename for the download; does not change XML contents.
+          <strong>Session restore</strong> — After a short debounce, the app auto-saves the whole workspace to <strong>IndexedDB</strong> in this browser
+          (every <strong>Open fonts</strong> slot, atlases, undo stacks). On the next visit, a <strong>Previous session found</strong> banner may list how many
+          fonts were stored; <strong>Restore</strong> loads them all, <strong>Clear stored session</strong> wipes that database entry, and <strong>Dismiss</strong>{' '}
+          hides that particular save until timestamps change (e.g. after more editing auto-saves again). Treat stored font data as sensitive.
         </li>
       </ul>
 
-      <h2 style={h2}>Global fields (top grid)</h2>
+      <h2 style={h2}>Diagnostics</h2>
+      <p style={p}>
+        The collapsible <strong>Diagnostics</strong> panel lists validation issues for the active font—duplicate character ids, glyphs outside{' '}
+        <code style={codeStyle}>scaleW</code>×<code style={codeStyle}>scaleH</code>, zero-size rectangles, unknown kerning character ids, page count mismatches,
+        and similar—sorted by severity (<strong>Fix next</strong> summarizes errors, warnings, and info). Rows with a target offer <strong>Jump</strong> to
+        scroll the character or kerning table to that glyph or pair. At the bottom, <strong>Verify XML round-trip</strong> serializes the current model to XML,
+        parses it back, and reports structural drift (glyph ids, counts, kernings, common scale fields) without changing your font.
+      </p>
+
+      <h2 style={h2}>Font metadata</h2>
       <dl style={{ fontSize: 13, lineHeight: 1.5, margin: 0 }}>
         <dt style={{ fontWeight: 600, marginTop: 8 }}>face</dt>
         <dd style={{ margin: '4px 0 0', color: textMuted }}>Font family name in BMFont; Pixi uses it as the installed font key.</dd>
@@ -374,6 +382,13 @@ export function ShoeboxHelpSection({ darkTheme, text, textMuted, inputBorder, pa
           <strong>+Advance X</strong> — Per-glyph advance added on top of Global advance X; exported <code style={codeStyle}>xadvance</code> is the sum (horizontal stride after the glyph).
         </li>
       </ul>
+      <p style={p}>
+        <strong>Adding glyphs:</strong> type a code point in the <strong>Add glyph</strong> field above the table — decimal (65), hex (U+41 / 0x41), or a single character (A) — then press Enter or click <strong>Add glyph</strong>. A new row is appended with zeroed atlas rect and metrics; set the atlas X/Y/Width/Height in the table or by dragging on the texture. The exported{' '}
+        <code style={codeStyle}>&lt;chars count=&quot;…&quot;&gt;</code> updates automatically.
+      </p>
+      <p style={p}>
+        <strong>Removing glyphs:</strong> click <strong>✕</strong> on any row to remove a single glyph, or select multiple rows and click <strong>Remove selected</strong>. A confirmation dialog lists what will be removed; related kerning pairs are dropped with the glyph.
+      </p>
 
       <h2 style={h2}>Kerning</h2>
       <p style={p}>
@@ -385,12 +400,32 @@ export function ShoeboxHelpSection({ darkTheme, text, textMuted, inputBorder, pa
       <p style={p}>
         <strong>Preview text</strong> drives the string in the <strong>Live preview</strong> (multi-line supported). Change it to stress-test punctuation,
         numbers, currency symbols, or languages you ship. The preview uses your live XML and atlas; when you edit the character table or kernings, the
-        canvas updates on the next sync.
+        canvas updates on the next sync. When preview text is non-empty, the section lists <strong>Missing</strong> code points (not in the font) and{' '}
+        <strong>Zero-size</strong> glyphs (present but with a zero-width or zero-height atlas rectangle), each with a readable label. Use{' '}
+        <strong>Filter first missing in character table</strong> or <strong>Add first missing glyph</strong> to jump to or create the first missing character.
       </p>
       <p style={p}>
         <strong>Compare to loaded</strong> (under Preview guides) shows a second Pixi panel with the font metrics from the last import or generator run next to
         your current edits, using the same preview text and uploaded atlas. If the loaded snapshot expected a different atlas pixel size than your PNG, that
         panel shows a short message instead of rendering.
+      </p>
+      <p style={p}>
+        <strong>Compare with another open font</strong> appears when you have at least two entries in <strong>Open fonts</strong>. It is mutually exclusive
+        with <strong>Compare to loaded</strong>: the side panel renders another slot&apos;s font using the <strong>last stored snapshot</strong> for that slot
+        (updated when you switch away from it or when auto-save runs), not live edits while that font sits in the background. Pick which open font to compare in
+        the companion dropdown.
+      </p>
+
+      <h2 style={h2}>Semantic diff</h2>
+      <p style={p}>
+        When <strong>Compare to loaded</strong> or <strong>Compare with another open font</strong> is on, a <strong>Semantic diff</strong> section appears below
+        Preview guides. It compares <strong>current edits</strong> to a <strong>reference</strong>—usually the loaded baseline (last import or generator), or
+        another open font&apos;s stored snapshot when that compare mode is selected (not live background edits). <strong>Compare to loaded</strong> only adds the
+        extra Pixi column; it does not change this reference. The diff covers glyph metrics (
+        <code style={codeStyle}>xoffset</code>, <code style={codeStyle}>yoffset</code>, <code style={codeStyle}>xadvance</code>,{' '}
+        <code style={codeStyle}>width</code>, <code style={codeStyle}>height</code>) and kerning rows added, removed, or with changed amounts—<em>not</em> atlas X/Y
+        moves. Expand <strong>Show detail lists</strong> for per-glyph and per-pair changes (values are <strong>reference → current</strong>). <strong>Jump</strong>{' '}
+        focuses the matching row in the character or kerning table.
       </p>
 
       <h2 style={h2}>Hover tooltips</h2>
@@ -408,14 +443,18 @@ export function ShoeboxHelpSection({ darkTheme, text, textMuted, inputBorder, pa
 
       <h2 style={h2}>Multi-page fonts</h2>
       <p style={p}>
-        If the XML declares more than one atlas page, the app shows a warning: only <strong>one uploaded image</strong> is wired for preview. Full multi-page
-        editing is not the focus here—split workflows or merge atlases if you hit this.
+        If the XML declares more than one <code style={codeStyle}>&lt;page&gt;</code>, upload one atlas image per page (filenames should match each{' '}
+        <strong>page file</strong> in the descriptor—you can multi-select images together with the font XML). Use the <strong>page tabs</strong> above the texture
+        view to switch atlases and edit glyphs on each page. The Live preview uses whatever page images are loaded in this session; keep{' '}
+        <code style={codeStyle}>scaleW</code> / <code style={codeStyle}>scaleH</code> aligned with each atlas you upload.
       </p>
 
-      <h2 style={h2}>Dark UI</h2>
+      <h2 style={h2}>Dark UI &amp; preferences</h2>
       <p style={{ ...p, marginBottom: 0 }}>
-        Toggle is stored in <code style={codeStyle}>localStorage</code> under <code style={codeStyle}>pixi-bitmap-font-toolkit-dark-ui</code> (<code style={codeStyle}>1</code>{' '}
-        / <code style={codeStyle}>0</code>) so your preference returns on the next visit.
+        The <strong>Dark UI</strong> toggle is stored in <code style={codeStyle}>localStorage</code> under{' '}
+        <code style={codeStyle}>pixi-bitmap-font-toolkit-dark-ui</code> (<code style={codeStyle}>1</code> / <code style={codeStyle}>0</code>).{' '}
+        <strong>Show atlas X/Y, width &amp; height</strong> (under Glyphs) is stored under{' '}
+        <code style={codeStyle}>pixi-bitmap-font-toolkit-show-atlas-rect-cols</code> the same way.
       </p>
     </section>
   )

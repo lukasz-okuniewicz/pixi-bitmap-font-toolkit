@@ -9,8 +9,10 @@ import React, {
 } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
 
+import { ConfirmDialog } from '@/components/ConfirmDialog'
 import { ScrubNumberInput } from '@/components/ScrubNumberInput'
 import { WithTooltip } from '@/components/WithTooltip'
+import { parseCodePointInput } from './parseCodePointInput'
 import type { BitmapFontChar } from './types'
 
 /** Human-readable label for a Unicode code point (for the glyph column). */
@@ -27,6 +29,12 @@ export function glyphLabelForCode(code: number): string {
   }
 }
 
+function formatGlyphCode(id: number): string {
+  return `U+${id.toString(16).toUpperCase().padStart(4, '0')}`
+}
+
+type PendingRemove = { indices: number[]; ids: number[] }
+
 function rowMatchesFilter(c: BitmapFontChar, qRaw: string): boolean {
   const q = qRaw.trim()
   if (!q) return true
@@ -42,8 +50,8 @@ function rowMatchesFilter(c: BitmapFontChar, qRaw: string): boolean {
   return false
 }
 
-const GRID_COLS_FULL = '28px 52px 72px 64px 64px 64px 64px 64px 64px 64px'
-const GRID_COLS_COMPACT = '28px 52px 72px 64px 64px 64px'
+const GRID_COLS_FULL = '28px 52px 72px 64px 64px 64px 64px 64px 64px 64px 52px'
+const GRID_COLS_COMPACT = '28px 52px 72px 64px 64px 64px 52px'
 
 const ATLAS_RECT_HDR_KEYS = new Set(['x', 'y', 'w', 'h'])
 
@@ -72,6 +80,9 @@ type Props = {
   onPatch: (index: number, patch: Partial<BitmapFontChar>) => void
   onBulkDelta?: (indices: number[], delta: BitmapFontBulkDelta) => void
   onBulkPreset?: (indices: number[], preset: BitmapFontBulkPreset) => void
+  onAdd?: (id: number) => void
+  onRemove?: (index: number) => void
+  onRemoveIndices?: (indices: number[]) => void
   darkTheme: boolean
   text: string
   textMuted: string
@@ -90,6 +101,9 @@ export const BitmapFontCharTable = forwardRef<BitmapFontCharTableHandle, Props>(
     onPatch,
     onBulkDelta,
     onBulkPreset,
+    onAdd,
+    onRemove,
+    onRemoveIndices,
     darkTheme,
     text,
     textMuted,
@@ -138,7 +152,7 @@ export const BitmapFontCharTable = forwardRef<BitmapFontCharTableHandle, Props>(
     [showAtlasRectColumns]
   )
 
-  const charGridMinWidth = showAtlasRectColumns ? 920 : 620
+  const charGridMinWidth = showAtlasRectColumns ? 972 : 672
 
   const rowVirtualizer = useVirtualizer({
     count: rowIndices.length,
@@ -307,9 +321,12 @@ export const BitmapFontCharTable = forwardRef<BitmapFontCharTableHandle, Props>(
       label: '+Advance X',
       hint: 'Extra horizontal advance added on top of Global advance X; exported xadvance is global + this (pixels)',
     },
+    { key: 'act', label: '', hint: 'Remove this glyph from the font' },
   ]
 
-  const visibleHdr = hdr.filter((h) => showAtlasRectColumns || !ATLAS_RECT_HDR_KEYS.has(h.key))
+  const visibleHdr = hdr.filter(
+    (h) => (showAtlasRectColumns || !ATLAS_RECT_HDR_KEYS.has(h.key)) && (h.key !== 'act' || onRemove)
+  )
 
   const fieldTooltips: Record<'x' | 'y' | 'width' | 'height' | 'xoffset' | 'yoffset' | 'xadvance', string> = {
     x: 'Left position of glyph rectangle in the texture atlas (pixels)',
@@ -328,6 +345,13 @@ export const BitmapFontCharTable = forwardRef<BitmapFontCharTableHandle, Props>(
   const [bulkXo, setBulkXo] = useState('')
   const [bulkYo, setBulkYo] = useState('')
   const [bulkAdv, setBulkAdv] = useState('')
+  const [addCodeInput, setAddCodeInput] = useState('')
+  const [pendingRemove, setPendingRemove] = useState<PendingRemove | null>(null)
+
+  const charIdSet = useMemo(() => new Set(chars.map((c) => c.id)), [chars])
+  const parsedAddId = useMemo(() => parseCodePointInput(addCodeInput), [addCodeInput])
+  const addDisabled =
+    !onAdd || parsedAddId == null || charIdSet.has(parsedAddId)
 
   const tipBg = darkTheme ? '#1e293b' : '#fff'
   const tipBorder = darkTheme ? '#334155' : '#d1d5db'
@@ -394,6 +418,66 @@ export const BitmapFontCharTable = forwardRef<BitmapFontCharTableHandle, Props>(
     [chars, keyboardVRow, onSelect, rowIndices]
   )
 
+  const submitAdd = useCallback(() => {
+    if (parsedAddId == null || !onAdd || charIdSet.has(parsedAddId)) return
+    onAdd(parsedAddId)
+    setAddCodeInput('')
+  }, [parsedAddId, onAdd, charIdSet])
+
+  const requestRemove = useCallback(
+    (indices: number[]) => {
+      if (indices.length === 0) return
+      const ids = indices.map((i) => chars[i]?.id).filter((id): id is number => id != null)
+      if (ids.length === 0) return
+      setPendingRemove({ indices, ids })
+    },
+    [chars]
+  )
+
+  const cancelPendingRemove = useCallback(() => setPendingRemove(null), [])
+
+  const confirmPendingRemove = useCallback(() => {
+    if (!pendingRemove) return
+    const { indices, ids } = pendingRemove
+    const removedIds = new Set(ids)
+    if (onRemoveIndices) onRemoveIndices(indices)
+    else if (onRemove) {
+      for (const i of [...indices].sort((a, b) => b - a)) onRemove(i)
+    }
+    if (indices.length > 1) {
+      setSelectedIndices(new Set())
+      onSelect(null)
+      lastPrimaryIdRef.current = null
+    } else {
+      setSelectedIndices((prev) => {
+        const next = new Set(prev)
+        for (const i of indices) next.delete(i)
+        return next
+      })
+      if (selectedId != null && removedIds.has(selectedId)) {
+        onSelect(null)
+        lastPrimaryIdRef.current = null
+      }
+    }
+    setPendingRemove(null)
+  }, [pendingRemove, onRemoveIndices, onRemove, selectedId, onSelect])
+
+  const removeOneAt = useCallback(
+    (modelIndex: number) => {
+      if (!chars[modelIndex] || !onRemove) return
+      requestRemove([modelIndex])
+    },
+    [chars, onRemove, requestRemove]
+  )
+
+  const removeSelected = useCallback(() => {
+    if (selectedIndices.size === 0) return
+    requestRemove([...selectedIndices])
+  }, [selectedIndices, requestRemove])
+
+  const removeDialogTitle =
+    pendingRemove?.ids.length === 1 ? 'Remove glyph?' : `Remove ${pendingRemove?.ids.length ?? 0} glyphs?`
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 6, minHeight: 0, flex: 1 }}>
       <div style={{ fontSize: 13, fontWeight: 600, color: text }}>
@@ -423,6 +507,59 @@ export const BitmapFontCharTable = forwardRef<BitmapFontCharTableHandle, Props>(
         <button type="button" onClick={selectAllFiltered} style={btnSm}>
           Select filtered
         </button>
+        {onAdd && (
+          <>
+            <label style={{ fontSize: 11, color: textMuted, display: 'flex', alignItems: 'center', gap: 6 }}>
+              Add glyph
+              <input
+                type="text"
+                value={addCodeInput}
+                onChange={(e) => setAddCodeInput(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault()
+                    submitAdd()
+                  }
+                }}
+                placeholder="Code, U+20AC, or glyph"
+                style={{
+                  width: 140,
+                  maxWidth: '100%',
+                  fontSize: 12,
+                  padding: '4px 8px',
+                  borderRadius: 6,
+                  border: `1px solid ${inputBorder}`,
+                  background: inputBg,
+                  color: text,
+                }}
+              />
+            </label>
+            <WithTooltip
+              darkTheme={darkTheme}
+              tip={
+                parsedAddId == null
+                  ? 'Enter a Unicode code point (decimal, U+hex, 0xhex) or a single character to add a glyph.'
+                  : charIdSet.has(parsedAddId)
+                    ? 'A glyph with this code point already exists in the font.'
+                    : 'Append a new glyph row for this code point; set atlas rect and metrics below.'
+              }
+            >
+              <button type="button" onClick={submitAdd} disabled={addDisabled} style={btnSm}>
+                Add glyph
+              </button>
+            </WithTooltip>
+          </>
+        )}
+        {selectedIndices.size > 0 && (onRemove || onRemoveIndices) && (
+          <WithTooltip
+            darkTheme={darkTheme}
+            tip="Remove the selected glyph rows from the font. Any kerning pairs referencing them will also be removed."
+          >
+            <button type="button" onClick={removeSelected} style={{ ...btnSm, background: '#fee2e2', color: '#991b1b' }}>
+              Remove selected
+            </button>
+          </WithTooltip>
+        )}
         <span style={{ fontSize: 10, color: textMuted }}>
           Focus the grid (click below headers), then ↑/↓ Home/End navigate; Enter focuses the first metric field
           {showAtlasRectColumns ? ' (Atlas X when atlas columns are shown).' : ' (Offset X when atlas columns are hidden).'}
@@ -731,12 +868,79 @@ export const BitmapFontCharTable = forwardRef<BitmapFontCharTableHandle, Props>(
                       </WithTooltip>
                     )
                   })}
+                  {onRemove && (
+                    <WithTooltip darkTheme={darkTheme} tip="Remove this glyph from the font. Any kerning pairs referencing it will also be removed.">
+                      <button
+                        type="button"
+                        onClick={() => removeOneAt(modelIndex)}
+                        style={{
+                          fontSize: 10,
+                          padding: '2px 6px',
+                          cursor: 'pointer',
+                          border: `1px solid ${inputBorder}`,
+                          borderRadius: 4,
+                          background: darkTheme ? '#374151' : '#fee2e2',
+                          color: darkTheme ? '#fca5a5' : '#991b1b',
+                        }}
+                      >
+                        ✕
+                      </button>
+                    </WithTooltip>
+                  )}
                 </div>
               )
             })}
           </div>
         </div>
       </WithTooltip>
+      <ConfirmDialog
+        open={pendingRemove != null}
+        title={removeDialogTitle}
+        confirmLabel="Remove"
+        cancelLabel="Cancel"
+        onConfirm={confirmPendingRemove}
+        onCancel={cancelPendingRemove}
+        darkTheme={darkTheme}
+        text={text}
+        textMuted={textMuted}
+        inputBorder={inputBorder}
+        inputBg={inputBg}
+      >
+        {pendingRemove?.ids.length === 1 && pendingRemove.ids[0] != null ? (
+          <p style={{ margin: 0 }}>
+            <span style={{ color: text }}>
+              {formatGlyphCode(pendingRemove.ids[0])}
+              {glyphLabelForCode(pendingRemove.ids[0]) !== '—' ? (
+                <span> ({glyphLabelForCode(pendingRemove.ids[0])})</span>
+              ) : null}
+            </span>{' '}
+            will be removed from this font.
+          </p>
+        ) : pendingRemove ? (
+          <>
+            <p style={{ margin: '0 0 8px' }}>These glyphs will be removed from this font:</p>
+            <ul
+              style={{
+                margin: 0,
+                padding: '0 0 0 18px',
+                maxHeight: 140,
+                overflowY: 'auto',
+              }}
+            >
+              {pendingRemove.ids.slice(0, 12).map((id) => (
+                <li key={id} style={{ color: text }}>
+                  {formatGlyphCode(id)}
+                  {glyphLabelForCode(id) !== '—' ? ` (${glyphLabelForCode(id)})` : ''}
+                </li>
+              ))}
+            </ul>
+            {pendingRemove.ids.length > 12 ? (
+              <p style={{ margin: '8px 0 0', fontSize: 12 }}>…and {pendingRemove.ids.length - 12} more.</p>
+            ) : null}
+          </>
+        ) : null}
+        <p style={{ margin: '12px 0 0', fontSize: 12 }}>Related kerning pairs will also be removed.</p>
+      </ConfirmDialog>
     </div>
   )
 })

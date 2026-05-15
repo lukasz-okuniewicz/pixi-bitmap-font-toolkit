@@ -15,15 +15,21 @@ export { detectIndentFromXml, serializeBitmapFontXml } from './BitmapFontSeriali
 export type { SerializeOptions } from './BitmapFontSerializer'
 export { serializeBitmapFontText } from './BitmapFontTextSerializer'
 export {
+  addChar,
   addKerning,
+  defaultCharForId,
   patchChar,
   patchCharById,
   patchKerning,
+  removeCharAt,
+  removeCharById,
+  removeCharsAt,
   removeKerningAt,
   setCommon,
   setInfo,
   setPages,
 } from './BitmapFontEditor'
+export { parseCodePointInput } from './parseCodePointInput'
 export { bitmapFontDiagnostics } from './bitmapFontDiagnostics'
 export type {
   BitmapFontDiagnostic,
@@ -32,6 +38,18 @@ export type {
 } from './bitmapFontDiagnostics'
 export { verifyBitmapFontXmlRoundTrip } from './bitmapFontRoundTrip'
 export type { BitmapFontRoundTripResult } from './bitmapFontRoundTrip'
+export {
+  BITMAP_FONT_SEMANTIC_CHAR_METRIC_FIELDS,
+  semanticDiffBitmapFont,
+  semanticDiffBitmapFontHasChanges,
+} from './bitmapFontSemanticDiff'
+export type {
+  BitmapFontSemanticCharChange,
+  BitmapFontSemanticCharMetricField,
+  BitmapFontSemanticDiff,
+  BitmapFontSemanticKerningAmountChange,
+  BitmapFontSemanticKerningOnly,
+} from './bitmapFontSemanticDiff'
 export { isBitmapFontBinaryMagic, parseBitmapFontBinary, serializeBitmapFontBinary } from './BitmapFontBinary'
 export { zipBitmapFontFiles, utf8ToUint8 } from './zipBitmapFontExport'
 export type { ZipBitmapFontFile } from './zipBitmapFontExport'
