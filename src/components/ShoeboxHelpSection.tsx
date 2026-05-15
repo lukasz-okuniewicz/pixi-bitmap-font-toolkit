@@ -268,7 +268,7 @@ export function ShoeboxHelpSection({ darkTheme, text, textMuted, inputBorder, pa
       <h2 style={h2}>Multiple open fonts</h2>
       <p style={p}>
         Starting another full import or generator run <strong>archives</strong> the font you were editing and opens a <strong>new slot</strong> for the new
-        result—for example uploading a different BMFont (first descriptor in the selection triggers archive once), running{' '}
+        result—for example uploading one or more BMFont descriptors with matching atlases in a single file dialog (each font gets its own slot), running{' '}
         <strong>Build BMFont from styled image</strong>, or <strong>Generate atlas + XML</strong> from the raster tab. Previous slots stay in memory (and in
         auto-saved session data) with their own undo history, baseline snapshot, export names, and atlas images. Use <strong>Open fonts</strong> to switch between
         them; use <strong>Clear stored session</strong> on the restore banner when you want to drop every saved slot from this browser.

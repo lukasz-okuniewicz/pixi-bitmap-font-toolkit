@@ -35,7 +35,7 @@ import {
 } from '@/lib/bitmapFont'
 import type { XAdvanceFixOptions } from '@/lib/bitmapFont'
 import { BitmapFontXAdvanceFixDialog } from '@/components/BitmapFontXAdvanceFixDialog'
-import { isBitmapFontBinaryMagic, parseBitmapFontBinary, serializeBitmapFontBinary } from '@/lib/bitmapFont/BitmapFontBinary'
+import { serializeBitmapFontBinary } from '@/lib/bitmapFont/BitmapFontBinary'
 import {
   BitmapFontCharTable,
   glyphLabelForCode,
@@ -66,8 +66,15 @@ import {
   collectAtlasPageBuffers,
   revokeObjectUrlRecord,
 } from '@/lib/bitmapFont/fontWorkspaceSlots'
-import type { WorkspaceSnapshotV2 } from '@/lib/bitmapFont/bitmapFontWorkspaceTypes'
+import type { AtlasPageBufferV2, WorkspaceSnapshotV2 } from '@/lib/bitmapFont/bitmapFontWorkspaceTypes'
 import { slotLabelFromMeta } from '@/lib/bitmapFont/bitmapFontWorkspaceTypes'
+import {
+  isLikelyAtlasImageFileName,
+  pairBitmapFontUploadBundles,
+  parseBitmapFontDescriptor,
+  uploadBasename,
+  type BitmapFontUploadBundle,
+} from '@/lib/bitmapFont/pairBitmapFontUploadFiles'
 import { initialModelHistoryState, modelHistoryReducer, type ModelHistoryState } from '@/lib/bitmapFont/modelHistoryReducer'
 import { rasterizeFontToModel } from '@/lib/bitmapFont/rasterizeFontToModel'
 import { withBasePath } from '@/lib/withBasePath'
@@ -134,8 +141,50 @@ function glyphHintForCodePoint(id: number): string {
 
 /** Atlas image: MIME or common extension (some browsers leave type empty). */
 function isLikelyAtlasImageFile(f: File): boolean {
-  if (f.type.startsWith('image/')) return true
-  return /\.(png|webp|jpe?g)$/i.test(f.name)
+  return isLikelyAtlasImageFileName(f.name, f.type)
+}
+
+function atlasImageFileByBasename(images: File[]): Map<string, File> {
+  const map = new Map<string, File>()
+  for (const f of images) {
+    map.set(uploadBasename(f.name).toLowerCase(), f)
+  }
+  return map
+}
+
+async function buildWorkspaceSnapshotFromBundle(
+  bundle: BitmapFontUploadBundle,
+  slotId: string,
+  imageFiles: File[]
+): Promise<WorkspaceSnapshotV2> {
+  const byName = atlasImageFileByBasename(imageFiles)
+  const sorted = [...bundle.model.pages].sort((a, b) => a.id - b.id)
+  const atlasPages: AtlasPageBufferV2[] = []
+  let pngFileName: string | null = null
+  for (const p of sorted) {
+    const imgName = bundle.atlasImageNameByPageId.get(p.id)
+    if (!imgName) continue
+    const file = byName.get(uploadBasename(imgName).toLowerCase())
+    if (!file) continue
+    const buffer = await file.arrayBuffer()
+    atlasPages.push({ pageId: p.id, buffer: buffer.slice(0) })
+    if (pngFileName == null) pngFileName = file.name
+  }
+  const model = structuredClone(bundle.model)
+  const histState: ModelHistoryState = { model, past: [], future: [] }
+  return {
+    id: slotId,
+    label: slotLabelFromMeta(bundle.xmlFileName, bundle.exportFileName, model),
+    histState,
+    baselineModel: structuredClone(model),
+    indent: bundle.indent,
+    exportFileName: bundle.exportFileName,
+    xmlFileName: bundle.xmlFileName,
+    pngFileName,
+    lastSavedXml: bundle.lastSavedXml,
+    activeAtlasPageId: sorted[0]?.id ?? 0,
+    atlasPages,
+  }
 }
 
 /** Batches ResizeObserver + skips redundant sizes to avoid canvas↔layout feedback loops. */
@@ -1551,49 +1600,6 @@ export default function ShoeboxBitmapFontEditor() {
     }
   }, [setModel])
 
-  /** Try to parse BMFont from a file without throwing (for multi-select). */
-  const tryLoadXmlFromFile = useCallback(
-    async (f: File, opts?: { archiveBeforeFullReplace?: boolean }): Promise<BitmapFontModel | null> => {
-      try {
-        const buf = await f.arrayBuffer()
-        const u8 = new Uint8Array(buf)
-        if (isBitmapFontBinaryMagic(u8)) {
-          const m = parseBitmapFontBinary(u8)
-          if (opts?.archiveBeforeFullReplace) {
-            if (!fontImportArchiveOnceRef.current) {
-              fontImportArchiveOnceRef.current = true
-              await archiveCurrentFontAndRotateSlotId()
-            }
-          }
-          const ind = '\t'
-          setIndent(ind)
-          setModel(m, false)
-          setLastSavedXml(serializeBitmapFontXml(m, { indent: ind }))
-          setXmlFileName(f.name)
-          const raw = f.name.replace(/^.*[/\\]/, '')
-          const stem = raw.replace(/\.[^.]+$/i, '') || 'font'
-          setExportFileName(`${stem}.xml`)
-          setSelectedCharId(null)
-          setLoadError(null)
-          setGeneratorNotes([])
-          return m
-        }
-        const textBody = new TextDecoder('utf-8', { fatal: false }).decode(u8)
-        if (!isBitmapFontXmlString(textBody).isBitmapFont) return null
-        if (opts?.archiveBeforeFullReplace) {
-          if (!fontImportArchiveOnceRef.current) {
-            fontImportArchiveOnceRef.current = true
-            await archiveCurrentFontAndRotateSlotId()
-          }
-        }
-        return applyXmlString(textBody, f.name)
-      } catch {
-        return null
-      }
-    },
-    [applyXmlString, archiveCurrentFontAndRotateSlotId, setModel]
-  )
-
   const onPickFontFiles = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files ?? [])
     e.target.value = ''
@@ -1605,63 +1611,113 @@ export default function ShoeboxBitmapFontEditor() {
     const images = files.filter(isLikelyAtlasImageFile)
     const textCandidates = files.filter((f) => !isLikelyAtlasImageFile(f))
 
-    let xmlOk = false
-    let loadedModel: BitmapFontModel | null = null
+    const parsedDescriptors = []
     for (const f of textCandidates) {
-      const m = await tryLoadXmlFromFile(f, { archiveBeforeFullReplace: true })
-      if (m) {
-        loadedModel = m
-        xmlOk = true
-        break
-      }
+      const buf = await f.arrayBuffer()
+      const d = parseBitmapFontDescriptor(f.name, buf)
+      if (d) parsedDescriptors.push(d)
     }
 
-    if (images.length > 1 && loadedModel && loadedModel.pages.length > 0) {
+    const applyBundleAtlasToLive = (bundle: BitmapFontUploadBundle) => {
+      const byName = atlasImageFileByBasename(images)
+      const sorted = [...bundle.model.pages].sort((a, b) => a.id - b.id)
+      const pageEntries = [...bundle.atlasImageNameByPageId.entries()]
+
+      if (pageEntries.length === 0) {
+        if (images.length > 0) loadPngFromFile(images[0]!, sorted[0]?.id)
+        return
+      }
+
+      if (pageEntries.length === 1 && images.length === 1) {
+        loadPngFromFile(images[0]!, pageEntries[0]![0])
+        return
+      }
+
       atlasImageFileRef.current = null
       revokeAllTextures()
-      const sorted = [...loadedModel.pages].sort((a, b) => a.id - b.id)
       const next: Record<number, string> = {}
-      for (let i = 0; i < sorted.length; i++) {
-        const p = sorted[i]!
-        const want = basename(p.file.trim())
-        const hit =
-          want && images.some((img) => basename(img.name) === want)
-            ? images.find((img) => basename(img.name) === want)
-            : images[i] ?? images[0]
-        if (hit) next[p.id] = URL.createObjectURL(hit)
+      let firstPng: string | null = null
+      for (const [pageId, imgName] of pageEntries) {
+        const file = byName.get(uploadBasename(imgName).toLowerCase())
+        if (!file) continue
+        next[pageId] = URL.createObjectURL(file)
+        if (firstPng == null) firstPng = file.name
       }
+      if (Object.keys(next).length === 0) return
       pageAtlasUrlsRef.current = next
       setPageAtlasUrls(next)
       const first = sorted[0]!
       const primaryUrl = next[first.id] ?? ''
       textureObjectUrlRef.current = primaryUrl || null
       setTextureObjectUrl(primaryUrl || null)
-      setPngFileName(images[0]!.name)
+      setPngFileName(firstPng ?? images[0]!.name)
       setActiveAtlasPageId(first.id)
-      setGeneratorNotes([])
-    } else if (images.length > 0) {
-      loadPngFromFile(images[0]!, loadedModel?.pages[0]?.id)
     }
 
-    if (textCandidates.length > 0 && !xmlOk) {
-      setLoadError('No valid BMFont XML, ASCII .fnt, or binary BMF in the selection.')
-      if (files.length === 1 && images.length === 0) {
-        setLastSavedXml(null)
-        setXmlFileName(null)
+    if (parsedDescriptors.length === 0) {
+      if (textCandidates.length > 0) {
+        setLoadError('No valid BMFont XML, ASCII .fnt, or binary BMF in the selection.')
+        if (files.length === 1 && images.length === 0) {
+          setLastSavedXml(null)
+          setXmlFileName(null)
+        }
+      } else {
+        setLoadError(null)
       }
-    } else {
-      setLoadError(null)
-      setGeneratorNotes([])
+      if (images.length > 0) {
+        loadPngFromFile(images[0]!, modelRef.current.pages[0]?.id)
+      }
+      return
     }
 
-    if (xmlOk) {
+    const { bundles, warnings } = pairBitmapFontUploadBundles(
+      parsedDescriptors,
+      images.map((f) => ({ name: f.name }))
+    )
+
+    if (bundles.length === 1) {
+      const bundle = bundles[0]!
+      if (hasXmlRef.current) {
+        fontImportArchiveOnceRef.current = true
+        await archiveCurrentFontAndRotateSlotId()
+      }
+      setIndent(bundle.indent)
+      setModel(bundle.model, false)
+      setLastSavedXml(bundle.lastSavedXml)
+      setXmlFileName(bundle.xmlFileName)
+      setExportFileName(bundle.exportFileName)
+      setSelectedCharId(null)
+      setLoadError(null)
+      applyBundleAtlasToLive(bundle)
+      setGeneratorNotes(warnings)
       try {
         await syncWorkspaceSlotFromLiveIntoRef()
         bumpWorkspaceSlotsVersion()
       } catch {
         /* ignore */
       }
+      return
     }
+
+    if (hasXmlRef.current) {
+      await syncWorkspaceSlotFromLiveIntoRef()
+    }
+
+    for (let i = 0; i < bundles.length - 1; i++) {
+      const slotId = newWorkspaceSlotId()
+      const snap = await buildWorkspaceSnapshotFromBundle(bundles[i]!, slotId, images)
+      mergeSnapshotIntoWorkspaceSlotsRef(snap)
+    }
+
+    const lastBundle = bundles[bundles.length - 1]!
+    const lastSlotId = newWorkspaceSlotId()
+    const lastSnap = await buildWorkspaceSnapshotFromBundle(lastBundle, lastSlotId, images)
+    mergeSnapshotIntoWorkspaceSlotsRef(lastSnap)
+    applyWorkspaceSlotToEditor(lastSnap)
+    setActiveSlotId(lastSlotId)
+    setGeneratorNotes(warnings)
+    setLoadError(null)
+    bumpWorkspaceSlotsVersion()
   }
 
   useEffect(() => {
@@ -3286,7 +3342,7 @@ export default function ShoeboxBitmapFontEditor() {
               />
               <WithTooltip
                 darkTheme={darkTheme}
-                tip="Pick BMFont XML / .fnt, atlas image, or both. Multi-select (Shift / Cmd / Ctrl) to choose two files in one dialog."
+                tip="Pick BMFont XML / .fnt and matching atlas image(s). Multi-select (Shift / Cmd / Ctrl) to load several fonts in one dialog — use Open fonts to switch between them."
               >
                 <span
                   style={{
