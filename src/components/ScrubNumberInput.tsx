@@ -1,6 +1,6 @@
 'use client'
 
-import React, { useCallback, useLayoutEffect, useRef } from 'react'
+import React, { useCallback, useLayoutEffect, useRef, useState } from 'react'
 
 export type ScrubNumberInputProps = Omit<React.InputHTMLAttributes<HTMLInputElement>, 'value' | 'onChange' | 'type'> & {
   value: number
@@ -11,6 +11,8 @@ export type ScrubNumberInputProps = Omit<React.InputHTMLAttributes<HTMLInputElem
   deadZonePx?: number
   min?: number
   max?: number
+  /** Increment for scrub rounding and native step (e.g. 0.01 for fractions in 0–1). */
+  step?: number
   /**
    * When a finite number and different from `value`, shows a small control to restore that number
    * (typically from the last import / generator snapshot). `null` / `undefined` = no restore UI.
@@ -29,6 +31,28 @@ function clamp(n: number, min?: number, max?: number): number {
   return v
 }
 
+function decimalPlacesFromStep(step: number): number {
+  const s = String(step)
+  const dot = s.indexOf('.')
+  if (dot < 0) return 0
+  return s.length - dot - 1
+}
+
+/** Round `n` to the nearest multiple of `step` (supports fractional steps like 0.01). */
+export function roundToStep(n: number, step: number): number {
+  if (!Number.isFinite(step) || step <= 0) return Math.round(n)
+  if (step >= 1) return Math.round(n / step) * step
+  const places = decimalPlacesFromStep(step)
+  const factor = 10 ** places
+  return Math.round(n * factor) / factor
+}
+
+const PARTIAL_DECIMAL = /^-?\d*\.?\d*$/
+
+function isPartialDecimalInput(raw: string): boolean {
+  return raw === '' || raw === '.' || raw === '-' || raw === '-.' || raw.endsWith('.')
+}
+
 /**
  * Native number input with horizontal drag-to-adjust: hold primary button and move
  * left/right. Small movement keeps normal click-to-focus typing.
@@ -40,9 +64,12 @@ export function ScrubNumberInput({
   deadZonePx = 4,
   min,
   max,
+  step = 1,
   style,
   className,
   onPointerDown: onPointerDownProp,
+  onFocus: onFocusProp,
+  onBlur: onBlurProp,
   disabled,
   baselineValue,
   resetControlBg,
@@ -51,6 +78,8 @@ export function ScrubNumberInput({
   ...rest
 }: ScrubNumberInputProps) {
   const valueRef = useRef(value)
+  const [editText, setEditText] = useState<string | null>(null)
+  const fractional = step > 0 && step < 1
 
   useLayoutEffect(() => {
     valueRef.current = value
@@ -74,6 +103,7 @@ export function ScrubNumberInput({
         if (!scrubbing) {
           if (Math.abs(dx) < deadZonePx) return
           scrubbing = true
+          setEditText(null)
           try {
             el.setPointerCapture(pointerId)
           } catch {
@@ -81,7 +111,7 @@ export function ScrubNumberInput({
           }
         }
         ev.preventDefault()
-        const next = clamp(Math.round(startValue + dx * sensitivity), min, max)
+        const next = clamp(roundToStep(startValue + dx * sensitivity, step), min, max)
         const latest = Number.isFinite(valueRef.current) ? valueRef.current : 0
         if (next === latest) return
         onValueChange(next)
@@ -105,7 +135,7 @@ export function ScrubNumberInput({
       window.addEventListener('pointerup', onEnd)
       window.addEventListener('pointercancel', onEnd)
     },
-    [value, deadZonePx, sensitivity, min, max, onValueChange, onPointerDownProp, disabled],
+    [value, deadZonePx, sensitivity, step, min, max, onValueChange, onPointerDownProp, disabled],
   )
 
   const base = Number.isFinite(value) ? value : 0
@@ -113,6 +143,55 @@ export function ScrubNumberInput({
 
   const styleObj = (style ?? {}) as React.CSSProperties
   const { width: widthFromStyle, ...inputOnlyStyle } = styleObj
+
+  const displayValue = fractional && editText !== null ? editText : String(base)
+
+  const commitFromText = useCallback(
+    (raw: string, fallback: number) => {
+      const n = parseFloat(raw)
+      return clamp(Number.isFinite(n) ? n : fallback, min, max)
+    },
+    [min, max],
+  )
+
+  const handleFocus = useCallback(
+    (e: React.FocusEvent<HTMLInputElement>) => {
+      onFocusProp?.(e)
+      if (fractional) setEditText(String(base))
+    },
+    [fractional, base, onFocusProp],
+  )
+
+  const handleBlur = useCallback(
+    (e: React.FocusEvent<HTMLInputElement>) => {
+      onBlurProp?.(e)
+      if (!fractional) return
+      const raw = editText ?? String(base)
+      onValueChange(commitFromText(raw, base))
+      setEditText(null)
+    },
+    [fractional, editText, base, onValueChange, commitFromText, onBlurProp],
+  )
+
+  const handleChange = useCallback(
+    (ev: React.ChangeEvent<HTMLInputElement>) => {
+      const raw = ev.target.value
+      if (fractional) {
+        if (!PARTIAL_DECIMAL.test(raw)) return
+        setEditText(raw)
+        if (!isPartialDecimalInput(raw)) {
+          onValueChange(commitFromText(raw, base))
+        }
+        return
+      }
+      const n = Number(raw)
+      onValueChange(Number.isFinite(n) ? clamp(n, min, max) : 0)
+    },
+    [fractional, base, onValueChange, commitFromText, min, max],
+  )
+
+  const inputType = fractional ? 'text' : 'number'
+  const inputMode = fractional ? 'decimal' : rest.inputMode
 
   const canRestore =
     typeof baselineValue === 'number' &&
@@ -122,35 +201,34 @@ export function ScrubNumberInput({
 
   const restoreTitle = `Restore value from last import or generator (${baselineValue})`
 
+  const commonInputProps: React.InputHTMLAttributes<HTMLInputElement> = {
+    type: inputType,
+    inputMode,
+    className: mergedClass,
+    disabled,
+    value: displayValue,
+    onChange: handleChange,
+    onFocus: handleFocus,
+    onBlur: handleBlur,
+    onPointerDown: handlePointerDown,
+    step,
+    min,
+    max,
+    ...rest,
+  }
+
   if (!canRestore) {
     return (
       <input
-        type="number"
-        className={mergedClass}
-        disabled={disabled}
-        value={base}
-        onChange={(ev) => {
-          const n = Number(ev.target.value)
-          onValueChange(Number.isFinite(n) ? n : 0)
-        }}
-        onPointerDown={handlePointerDown}
+        {...commonInputProps}
         style={{ cursor: 'ew-resize', ...styleObj }}
-        {...rest}
       />
     )
   }
 
   const inputEl = (
     <input
-      type="number"
-      className={mergedClass}
-      disabled={disabled}
-      value={base}
-      onChange={(ev) => {
-        const n = Number(ev.target.value)
-        onValueChange(Number.isFinite(n) ? n : 0)
-      }}
-      onPointerDown={handlePointerDown}
+      {...commonInputProps}
       style={{
         cursor: 'ew-resize',
         ...inputOnlyStyle,
@@ -158,7 +236,6 @@ export function ScrubNumberInput({
         minWidth: 0,
         width: 'auto',
       }}
-      {...rest}
     />
   )
 
@@ -180,6 +257,7 @@ export function ScrubNumberInput({
         onClick={(e) => {
           e.preventDefault()
           e.stopPropagation()
+          setEditText(null)
           onValueChange(clamp(baselineValue, min, max))
         }}
         style={{

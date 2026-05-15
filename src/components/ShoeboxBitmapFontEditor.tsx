@@ -7,9 +7,12 @@ import { useSearchParams } from 'next/navigation'
 import {
   addChar,
   addKerning,
+  applyXAdvanceFixes,
   bitmapFontDiagnostics,
   charAtlasPage,
   defaultCharForId,
+  DEFAULT_XADVANCE_FIX_OPTIONS,
+  findSuspiciousXAdvanceChars,
   semanticDiffBitmapFont,
   semanticDiffBitmapFontHasChanges,
   detectIndentFromXml,
@@ -30,6 +33,8 @@ import {
   verifyBitmapFontXmlRoundTrip,
   zipBitmapFontFiles,
 } from '@/lib/bitmapFont'
+import type { XAdvanceFixOptions } from '@/lib/bitmapFont'
+import { BitmapFontXAdvanceFixDialog } from '@/components/BitmapFontXAdvanceFixDialog'
 import { isBitmapFontBinaryMagic, parseBitmapFontBinary, serializeBitmapFontBinary } from '@/lib/bitmapFont/BitmapFontBinary'
 import {
   BitmapFontCharTable,
@@ -849,6 +854,10 @@ export default function ShoeboxBitmapFontEditor() {
   const [showAnchorCenterY, setShowAnchorCenterY] = useState(false)
   const [showOutlines, setShowOutlines] = useState(true)
   const [showAdvanceOverlay, setShowAdvanceOverlay] = useState(false)
+  const [xAdvanceFixOpen, setXAdvanceFixOpen] = useState(false)
+  const [xAdvanceFixOptions, setXAdvanceFixOptions] = useState<XAdvanceFixOptions>(() => ({
+    ...DEFAULT_XADVANCE_FIX_OPTIONS,
+  }))
   /** Side-by-side Pixi: loaded snapshot (`baselineModel`) vs current edits. */
   const [comparePixiToBaseline, setComparePixiToBaseline] = useState(false)
   /** Mutually exclusive with `comparePixiToBaseline`: right panel shows another workspace slot’s snapshot. */
@@ -2399,6 +2408,20 @@ export default function ShoeboxBitmapFontEditor() {
     }))
   }, [setModel])
 
+  const xAdvanceFixSuggestions = useMemo(
+    () => (xAdvanceFixOpen ? findSuspiciousXAdvanceChars(model, xAdvanceFixOptions) : []),
+    [model, xAdvanceFixOpen, xAdvanceFixOptions]
+  )
+
+  const applyXAdvanceFix = useCallback(() => {
+    const fixes = xAdvanceFixSuggestions.map((s) => ({
+      charId: s.charId,
+      suggestedLocalXAdvance: s.suggestedLocalXAdvance,
+    }))
+    setModel((prev) => applyXAdvanceFixes(prev, fixes), true)
+    setXAdvanceFixOpen(false)
+  }, [setModel, xAdvanceFixSuggestions])
+
   useEffect(() => {
     loadBitmapFontSession()
       .then((rec) => {
@@ -3396,7 +3419,7 @@ export default function ShoeboxBitmapFontEditor() {
                 Preview guides &amp; metrics assist
               </h2>
               <p style={{ ...subsectionLabel, marginBottom: 10 }}>
-                Overlays and tools for the atlas and Pixi panels. Auto center Y edits glyph metrics.
+                Overlays and tools for the atlas and Pixi panels. Auto center Y and Auto Fix xAdvance edit glyph metrics.
               </p>
               <div
                 style={{
@@ -3539,6 +3562,29 @@ export default function ShoeboxBitmapFontEditor() {
                     }}
                   >
                     Auto center Y
+                  </button>
+                </WithTooltip>
+                <WithTooltip
+                  darkTheme={darkTheme}
+                  tip="Detect glyphs whose effective xadvance (global + local) is much wider than visible ink. Review suggested fixes before applying; does not change kerning, atlas rects, or global advance X."
+                >
+                  <button
+                    type="button"
+                    disabled={!ready}
+                    onClick={() => setXAdvanceFixOpen(true)}
+                    style={{
+                      fontSize: 12,
+                      fontWeight: 600,
+                      padding: '6px 12px',
+                      cursor: ready ? 'pointer' : 'not-allowed',
+                      opacity: ready ? 1 : 0.45,
+                      background: darkTheme ? '#334155' : '#e5e7eb',
+                      color: text,
+                      border: `1px solid ${inputBorder}`,
+                      borderRadius: 8,
+                    }}
+                  >
+                    Auto Fix xAdvance
                   </button>
                 </WithTooltip>
               </div>
@@ -5002,6 +5048,20 @@ export default function ShoeboxBitmapFontEditor() {
             </div>,
             document.body
           )}
+        <BitmapFontXAdvanceFixDialog
+          open={xAdvanceFixOpen}
+          suggestions={xAdvanceFixSuggestions}
+          options={xAdvanceFixOptions}
+          globalXAdvance={globalXAdvanceValue(model.common)}
+          onOptionsChange={(patch) => setXAdvanceFixOptions((prev) => ({ ...prev, ...patch }))}
+          onApply={applyXAdvanceFix}
+          onCancel={() => setXAdvanceFixOpen(false)}
+          darkTheme={darkTheme}
+          text={text}
+          textMuted={textMuted}
+          inputBorder={inputBorder}
+          inputBg={inputBg}
+        />
     </div>
   )
 }

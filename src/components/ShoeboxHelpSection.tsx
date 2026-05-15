@@ -312,7 +312,8 @@ export function ShoeboxHelpSection({ darkTheme, text, textMuted, inputBorder, pa
       </p>
       <p style={p}>
         Preview overlays—<strong>Baseline</strong>, <strong>Anchor Y (0.5)</strong>, <strong>Glyph outlines</strong>, <strong>Advance bars</strong>,{' '}
-        <strong>Compare to loaded</strong>, <strong>Compare with another open font</strong>, and <strong>Auto center Y</strong>—are under{' '}
+        <strong>Compare to loaded</strong>, <strong>Compare with another open font</strong>, <strong>Auto center Y</strong>, and{' '}
+        <strong>Auto Fix xAdvance</strong>—are under{' '}
         <strong>Preview guides &amp; metrics assist</strong> (above the Live preview panels).
       </p>
       <ul style={ul}>

@@ -22,6 +22,27 @@ describe('bitmapFontDiagnostics', () => {
     const d = bitmapFontDiagnostics(m)
     expect(d.some((x) => x.code === 'kerning_unknown_second')).toBe(true)
   })
+
+  it('includes info when no suspicious xadvance', () => {
+    const m = defaultBitmapFontModel()
+    m.chars = [{ id: 65, x: 0, y: 0, width: 10, height: 12, xoffset: 0, yoffset: 0, xadvance: 14 }]
+    const d = bitmapFontDiagnostics(m)
+    expect(d.some((x) => x.code === 'xadvance_none_suspicious')).toBe(true)
+    expect(d.find((x) => x.code === 'xadvance_none_suspicious')?.message).toBe(
+      'No suspicious xAdvance values found.'
+    )
+  })
+
+  it('includes summary and per-glyph warnings for suspicious xadvance', () => {
+    const m = defaultBitmapFontModel()
+    m.chars = [{ id: 65, x: 0, y: 0, width: 10, height: 12, xoffset: 0, yoffset: 0, xadvance: 48 }]
+    const d = bitmapFontDiagnostics(m)
+    expect(d.some((x) => x.code === 'xadvance_suspicious_summary')).toBe(true)
+    expect(d.find((x) => x.code === 'xadvance_suspicious_summary')?.message).toContain(
+      '1 glyph(s) with suspicious xadvance (effective = global + local)'
+    )
+    expect(d.some((x) => x.code === 'xadvance_suspicious' && x.target?.kind === 'char')).toBe(true)
+  })
 })
 
 describe('parseBitmapFontXml errors', () => {

@@ -1,3 +1,9 @@
+import {
+  DEFAULT_XADVANCE_FIX_OPTIONS,
+  findSuspiciousXAdvanceChars,
+  formatXAdvanceChange,
+  type XAdvanceFixOptions,
+} from './bitmapFontMetricsUtils'
 import { charAtlasPage } from './types'
 import type { BitmapFontModel } from './types'
 
@@ -107,6 +113,45 @@ export function bitmapFontDiagnostics(model: BitmapFontModel): BitmapFontDiagnos
 
   if (model.chars.length === 0) {
     out.push({ level: 'info', code: 'no_chars', message: 'Font has no glyphs (<chars> is empty).' })
+  }
+
+  out.push(...bitmapFontXAdvanceDiagnostics(model))
+
+  return out
+}
+
+/** Diagnostics for glyphs whose effective xadvance exceeds visible width (same rules as Auto Fix xAdvance). */
+export function bitmapFontXAdvanceDiagnostics(
+  model: BitmapFontModel,
+  options?: XAdvanceFixOptions
+): BitmapFontDiagnostic[] {
+  const out: BitmapFontDiagnostic[] = []
+  const suspicious = findSuspiciousXAdvanceChars(model, options ?? DEFAULT_XADVANCE_FIX_OPTIONS)
+
+  if (suspicious.length === 0) {
+    out.push({
+      level: 'info',
+      code: 'xadvance_none_suspicious',
+      message: 'No suspicious xAdvance values found.',
+    })
+    return out
+  }
+
+  const n = suspicious.length
+  out.push({
+    level: 'warn',
+    code: 'xadvance_suspicious_summary',
+    message: `${n} glyph(s) with suspicious xadvance (effective = global + local). Use Auto Fix xAdvance in Preview guides.`,
+  })
+
+  for (const s of suspicious) {
+    const code = `U+${s.charId.toString(16).toUpperCase().padStart(4, '0')}`
+    out.push({
+      level: 'warn',
+      code: 'xadvance_suspicious',
+      message: `${code}: effective ${formatXAdvanceChange(s.oldEffectiveXAdvance, s.suggestedEffectiveXAdvance)}; local ${formatXAdvanceChange(s.oldLocalXAdvance, s.suggestedLocalXAdvance)}.`,
+      target: { kind: 'char', id: s.charId },
+    })
   }
 
   return out

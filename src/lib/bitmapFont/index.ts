@@ -30,7 +30,20 @@ export {
   setPages,
 } from './BitmapFontEditor'
 export { parseCodePointInput } from './parseCodePointInput'
-export { bitmapFontDiagnostics } from './bitmapFontDiagnostics'
+export {
+  applyXAdvanceFixes,
+  DEFAULT_XADVANCE_FIX_OPTIONS,
+  findSuspiciousXAdvanceChars,
+  formatXAdvanceChange,
+  getSuggestedXAdvanceFix,
+} from './bitmapFontMetricsUtils'
+export type {
+  SuggestedXAdvanceFix,
+  XAdvanceFixApplyEntry,
+  XAdvanceFixOptions,
+  XAdvanceFixSuggestion,
+} from './bitmapFontMetricsUtils'
+export { bitmapFontDiagnostics, bitmapFontXAdvanceDiagnostics } from './bitmapFontDiagnostics'
 export type {
   BitmapFontDiagnostic,
   BitmapFontDiagnosticLevel,
