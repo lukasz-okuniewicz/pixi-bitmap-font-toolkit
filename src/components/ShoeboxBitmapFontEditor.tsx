@@ -171,6 +171,108 @@ function observeElementSize(
 
 /** Host div height; ResizeObserver drives Pixi/texture sizing. */
 const PREVIEW_HOST_HEIGHT = 'clamp(200px, 28vh, 360px)'
+/** Below glyph popover / tooltip portals (see WithTooltip). */
+const PREVIEW_FULLSCREEN_Z_INDEX = 50_000
+const PREVIEW_FULLSCREEN_TOOLBAR_TOP = 'calc(44px + env(safe-area-inset-top, 0px))'
+
+function previewHostContainerStyle(
+  expanded: boolean,
+  opts: { panelBorder: string; background: string }
+): React.CSSProperties {
+  const shared: React.CSSProperties = {
+    width: '100%',
+    border: `1px solid ${opts.panelBorder}`,
+    overflow: 'hidden',
+    background: opts.background,
+  }
+  if (!expanded) {
+    return {
+      ...shared,
+      height: PREVIEW_HOST_HEIGHT,
+      borderRadius: 8,
+      contain: 'strict',
+    }
+  }
+  return {
+    ...shared,
+    position: 'fixed',
+    top: PREVIEW_FULLSCREEN_TOOLBAR_TOP,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    width: '100vw',
+    height: 'calc(100dvh - 44px - env(safe-area-inset-top, 0px))',
+    maxHeight: 'calc(100dvh - 44px - env(safe-area-inset-top, 0px))',
+    zIndex: PREVIEW_FULLSCREEN_Z_INDEX,
+    borderRadius: 0,
+  }
+}
+
+type PreviewFullscreenToolbarProps = {
+  title: string
+  darkTheme: boolean
+  text: string
+  inputBorder: string
+  panelBg: string
+  onExit: () => void
+  onCenter: () => void
+  centerDisabled: boolean
+}
+
+function PreviewFullscreenToolbar({
+  title,
+  darkTheme,
+  text,
+  inputBorder,
+  panelBg,
+  onExit,
+  onCenter,
+  centerDisabled,
+}: PreviewFullscreenToolbarProps) {
+  const btn: React.CSSProperties = {
+    fontSize: 11,
+    fontWeight: 600,
+    padding: '6px 12px',
+    borderRadius: 6,
+    border: `1px solid ${inputBorder}`,
+    cursor: 'pointer',
+    background: darkTheme ? '#334155' : '#e5e7eb',
+    color: text,
+  }
+  return createPortal(
+    <div
+      role="toolbar"
+      aria-label={`${title} fullscreen controls`}
+      style={{
+        position: 'fixed',
+        top: 0,
+        left: 0,
+        right: 0,
+        zIndex: PREVIEW_FULLSCREEN_Z_INDEX + 1,
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        gap: 12,
+        padding: '10px 14px',
+        paddingTop: 'max(10px, env(safe-area-inset-top))',
+        background: panelBg,
+        borderBottom: `1px solid ${inputBorder}`,
+        boxShadow: darkTheme ? '0 4px 24px rgba(0,0,0,0.45)' : '0 4px 24px rgba(0,0,0,0.12)',
+      }}
+    >
+      <span style={{ fontSize: 13, fontWeight: 600, color: text }}>{title}</span>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        <button type="button" disabled={centerDisabled} onClick={onCenter} style={{ ...btn, opacity: centerDisabled ? 0.55 : 1, cursor: centerDisabled ? 'not-allowed' : 'pointer' }}>
+          Center
+        </button>
+        <button type="button" onClick={onExit} style={btn} aria-label={`Exit ${title} fullscreen`}>
+          Exit
+        </button>
+      </div>
+    </div>,
+    document.body
+  )
+}
 
 /** Pixi `fontName` for the loaded-snapshot preview only — avoids clobbering `model.info.face` in the global BitmapFont registry. */
 const SHOEBOX_PREVIEW_BASELINE_FACE = '__shoebox_preview_baseline__'
@@ -612,6 +714,27 @@ export default function ShoeboxBitmapFontEditor() {
   const panelBg = darkTheme ? '#1e293b' : '#fff'
 
   const [stackPreviews, setStackPreviews] = useState(false)
+  const [texturePreviewExpanded, setTexturePreviewExpanded] = useState(false)
+  const [livePreviewExpanded, setLivePreviewExpanded] = useState(false)
+  const previewSectionSticky = !stackPreviews && !texturePreviewExpanded && !livePreviewExpanded
+  const anyPreviewFullscreen = texturePreviewExpanded || livePreviewExpanded
+
+  useEffect(() => {
+    if (!anyPreviewFullscreen) return
+    const prevOverflow = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return
+      setTexturePreviewExpanded(false)
+      setLivePreviewExpanded(false)
+    }
+    window.addEventListener('keydown', onKey)
+    return () => {
+      document.body.style.overflow = prevOverflow
+      window.removeEventListener('keydown', onKey)
+    }
+  }, [anyPreviewFullscreen])
+
   useLayoutEffect(() => {
     if (typeof window === 'undefined') return
     const mq = window.matchMedia('(max-width: 720px)')
@@ -619,6 +742,22 @@ export default function ShoeboxBitmapFontEditor() {
     apply()
     mq.addEventListener('change', apply)
     return () => mq.removeEventListener('change', apply)
+  }, [])
+
+  const toggleTexturePreviewFullscreen = useCallback(() => {
+    setTexturePreviewExpanded((v) => {
+      const next = !v
+      if (next) setLivePreviewExpanded(false)
+      return next
+    })
+  }, [])
+
+  const toggleLivePreviewFullscreen = useCallback(() => {
+    setLivePreviewExpanded((v) => {
+      const next = !v
+      if (next) setTexturePreviewExpanded(false)
+      return next
+    })
   }, [])
 
   const cssVars = {
@@ -3736,7 +3875,7 @@ export default function ShoeboxBitmapFontEditor() {
               style={{
                 ...panelChrome,
                 // Sticky keeps the preview handy while editing; z-index lifts it above sibling sections while scrolling.
-                ...(!stackPreviews ? { position: 'sticky', top: 8, zIndex: 10 } : {}),
+                ...(previewSectionSticky ? { position: 'sticky', top: 8, zIndex: 10 } : {}),
               }}
               aria-labelledby="atlas-preview-heading"
             >
@@ -3767,27 +3906,59 @@ export default function ShoeboxBitmapFontEditor() {
                     <WithTooltip darkTheme={darkTheme} tip="Atlas: wheel zoom, drag to pan, drag a glyph box to change atlas X/Y in the font.">
                       <div style={{ fontSize: 12, fontWeight: 600, color: textMuted }}>Texture</div>
                     </WithTooltip>
-                    <WithTooltip darkTheme={darkTheme} tip="Reset pan and zoom so the atlas fits and is centered in the preview.">
-                      <button
-                        type="button"
-                        disabled={!hasXml || !activeAtlasUrl}
-                        onClick={() => textureRef.current?.resetPreviewView()}
-                        style={{
-                          fontSize: 11,
-                          fontWeight: 600,
-                          padding: '3px 8px',
-                          borderRadius: 6,
-                          border: `1px solid ${inputBorder}`,
-                          cursor: !hasXml || !activeAtlasUrl ? 'not-allowed' : 'pointer',
-                          background: darkTheme ? '#334155' : '#e5e7eb',
-                          color: text,
-                          flexShrink: 0,
-                          opacity: !hasXml || !activeAtlasUrl ? 0.55 : 1,
-                        }}
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
+                      <WithTooltip
+                        darkTheme={darkTheme}
+                        tip={
+                          texturePreviewExpanded
+                            ? 'Exit fullscreen texture preview (Escape).'
+                            : 'Open texture preview fullscreen in the browser window (Escape to exit).'
+                        }
                       >
-                        Center
-                      </button>
-                    </WithTooltip>
+                        <button
+                          type="button"
+                          aria-pressed={texturePreviewExpanded}
+                          aria-label={
+                            texturePreviewExpanded
+                              ? 'Exit texture preview fullscreen'
+                              : 'Open texture preview fullscreen'
+                          }
+                          onClick={toggleTexturePreviewFullscreen}
+                          style={{
+                            fontSize: 11,
+                            fontWeight: 600,
+                            padding: '3px 8px',
+                            borderRadius: 6,
+                            border: `1px solid ${inputBorder}`,
+                            cursor: 'pointer',
+                            background: darkTheme ? '#334155' : '#e5e7eb',
+                            color: text,
+                          }}
+                        >
+                          {texturePreviewExpanded ? 'Exit' : 'Fullscreen'}
+                        </button>
+                      </WithTooltip>
+                      <WithTooltip darkTheme={darkTheme} tip="Reset pan and zoom so the atlas fits and is centered in the preview.">
+                        <button
+                          type="button"
+                          disabled={!hasXml || !activeAtlasUrl}
+                          onClick={() => textureRef.current?.resetPreviewView()}
+                          style={{
+                            fontSize: 11,
+                            fontWeight: 600,
+                            padding: '3px 8px',
+                            borderRadius: 6,
+                            border: `1px solid ${inputBorder}`,
+                            cursor: !hasXml || !activeAtlasUrl ? 'not-allowed' : 'pointer',
+                            background: darkTheme ? '#334155' : '#e5e7eb',
+                            color: text,
+                            opacity: !hasXml || !activeAtlasUrl ? 0.55 : 1,
+                          }}
+                        >
+                          Center
+                        </button>
+                      </WithTooltip>
+                    </div>
                   </div>
                   {model.pages.length > 1 && (
                     <div role="tablist" aria-label="Atlas page" style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
@@ -3817,18 +3988,18 @@ export default function ShoeboxBitmapFontEditor() {
                     </div>
                   )}
                   <WithTooltip darkTheme={darkTheme} block tip="Atlas preview. Glyph outlines reflect the current character table.">
-                    <div
-                      ref={textureHostRef}
-                      style={{
-                        height: PREVIEW_HOST_HEIGHT,
-                        width: '100%',
-                        border: `1px solid ${panelBorder}`,
-                        borderRadius: 8,
-                        overflow: 'hidden',
-                        contain: 'strict',
-                        background: 'var(--shoebox-canvas-bg)',
-                      }}
-                    />
+                    <div>
+                      {texturePreviewExpanded ? (
+                        <div style={{ height: PREVIEW_HOST_HEIGHT, width: '100%' }} aria-hidden />
+                      ) : null}
+                      <div
+                        ref={textureHostRef}
+                        style={previewHostContainerStyle(texturePreviewExpanded, {
+                          panelBorder,
+                          background: 'var(--shoebox-canvas-bg)',
+                        })}
+                      />
+                    </div>
                   </WithTooltip>
                 </div>
                 <div
@@ -3994,41 +4165,73 @@ export default function ShoeboxBitmapFontEditor() {
                         {compareRightPanelVisible ? 'Current' : 'Live preview'}
                       </div>
                     </WithTooltip>
-                    <WithTooltip darkTheme={darkTheme} tip="Reset pan and zoom so the preview text fits and is centered in the box.">
-                      <button
-                        type="button"
-                        disabled={atlasPixelMatchesCommon !== true}
-                        onClick={() => previewRef.current?.resetPreviewView()}
-                        style={{
-                          fontSize: 11,
-                          fontWeight: 600,
-                          padding: '3px 8px',
-                          borderRadius: 6,
-                          border: `1px solid ${inputBorder}`,
-                          cursor: atlasPixelMatchesCommon !== true ? 'not-allowed' : 'pointer',
-                          background: darkTheme ? '#334155' : '#e5e7eb',
-                          color: text,
-                          flexShrink: 0,
-                          opacity: atlasPixelMatchesCommon !== true ? 0.55 : 1,
-                        }}
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
+                      <WithTooltip
+                        darkTheme={darkTheme}
+                        tip={
+                          livePreviewExpanded
+                            ? 'Exit fullscreen live preview (Escape).'
+                            : 'Open live preview fullscreen in the browser window (Escape to exit).'
+                        }
                       >
-                        Center
-                      </button>
-                    </WithTooltip>
+                        <button
+                          type="button"
+                          aria-pressed={livePreviewExpanded}
+                          aria-label={
+                            livePreviewExpanded
+                              ? 'Exit live preview fullscreen'
+                              : 'Open live preview fullscreen'
+                          }
+                          onClick={toggleLivePreviewFullscreen}
+                          style={{
+                            fontSize: 11,
+                            fontWeight: 600,
+                            padding: '3px 8px',
+                            borderRadius: 6,
+                            border: `1px solid ${inputBorder}`,
+                            cursor: 'pointer',
+                            background: darkTheme ? '#334155' : '#e5e7eb',
+                            color: text,
+                          }}
+                        >
+                          {livePreviewExpanded ? 'Exit' : 'Fullscreen'}
+                        </button>
+                      </WithTooltip>
+                      <WithTooltip darkTheme={darkTheme} tip="Reset pan and zoom so the preview text fits and is centered in the box.">
+                        <button
+                          type="button"
+                          disabled={atlasPixelMatchesCommon !== true}
+                          onClick={() => previewRef.current?.resetPreviewView()}
+                          style={{
+                            fontSize: 11,
+                            fontWeight: 600,
+                            padding: '3px 8px',
+                            borderRadius: 6,
+                            border: `1px solid ${inputBorder}`,
+                            cursor: atlasPixelMatchesCommon !== true ? 'not-allowed' : 'pointer',
+                            background: darkTheme ? '#334155' : '#e5e7eb',
+                            color: text,
+                            opacity: atlasPixelMatchesCommon !== true ? 0.55 : 1,
+                          }}
+                        >
+                          Center
+                        </button>
+                      </WithTooltip>
+                    </div>
                   </div>
                   <WithTooltip darkTheme={darkTheme} block tip="Renders the same way as in-game BitmapText.">
-                    <div
-                      ref={previewHostRef}
-                      style={{
-                        height: PREVIEW_HOST_HEIGHT,
-                        width: '100%',
-                        border: `1px solid ${panelBorder}`,
-                        borderRadius: 8,
-                        overflow: 'hidden',
-                        contain: 'strict',
-                        background: pixiPreviewHostBg,
-                      }}
-                    />
+                    <div>
+                      {livePreviewExpanded ? (
+                        <div style={{ height: PREVIEW_HOST_HEIGHT, width: '100%' }} aria-hidden />
+                      ) : null}
+                      <div
+                        ref={previewHostRef}
+                        style={previewHostContainerStyle(livePreviewExpanded, {
+                          panelBorder,
+                          background: pixiPreviewHostBg,
+                        })}
+                      />
+                    </div>
                   </WithTooltip>
                 </div>
               </div>
@@ -4490,6 +4693,30 @@ export default function ShoeboxBitmapFontEditor() {
           </>
         )}
       </div>
+        {texturePreviewExpanded && typeof document !== 'undefined' && (
+          <PreviewFullscreenToolbar
+            title="Texture"
+            darkTheme={darkTheme}
+            text={text}
+            inputBorder={inputBorder}
+            panelBg={panelBg}
+            onExit={() => setTexturePreviewExpanded(false)}
+            onCenter={() => textureRef.current?.resetPreviewView()}
+            centerDisabled={!hasXml || !activeAtlasUrl}
+          />
+        )}
+        {livePreviewExpanded && typeof document !== 'undefined' && (
+          <PreviewFullscreenToolbar
+            title={compareRightPanelVisible ? 'Current' : 'Live preview'}
+            darkTheme={darkTheme}
+            text={text}
+            inputBorder={inputBorder}
+            panelBg={panelBg}
+            onExit={() => setLivePreviewExpanded(false)}
+            onCenter={() => previewRef.current?.resetPreviewView()}
+            centerDisabled={atlasPixelMatchesCommon !== true}
+          />
+        )}
         {atlasGlyphPopover &&
           atlasGlyphPopoverChar &&
           atlasGlyphPopoverPosition &&
