@@ -53,5 +53,30 @@ export type {
 export { isBitmapFontBinaryMagic, parseBitmapFontBinary, serializeBitmapFontBinary } from './BitmapFontBinary'
 export { zipBitmapFontFiles, utf8ToUint8 } from './zipBitmapFontExport'
 export type { ZipBitmapFontFile } from './zipBitmapFontExport'
+export {
+  isPowerOfTwo,
+  nextPowerOfTwo,
+  isSquarePowerOfTwoAtlas,
+  detectHorizontalStripLayout,
+  shouldDefaultEnableAtlasRepack,
+  planSquarePo2Pack,
+} from './atlasRepackUtils'
+export type { AtlasSize, GlyphPlacement, SquarePo2PackPlan } from './atlasRepackUtils'
+export { repackBitmapFontAtlasToPowerOfTwoSquare } from './bitmapFontAtlasRepack'
+export type {
+  AtlasPageSource,
+  RepackAtlasOptions,
+  RepackAtlasResult,
+  RepackAtlasFailure,
+  RepackAtlasSuccess,
+  RepackAtlasOutcome,
+} from './bitmapFontAtlasRepack'
+export { prepareBitmapFontExport } from './prepareBitmapFontExport'
+export type {
+  PrepareBitmapFontExportInput,
+  PrepareBitmapFontExportSuccess,
+  PrepareBitmapFontExportFailure,
+  PrepareBitmapFontExportOutcome,
+} from './prepareBitmapFontExport'
 export { BitmapFontPreview } from './BitmapFontPreview'
 export { BitmapFontTextureView } from './BitmapFontTextureView'

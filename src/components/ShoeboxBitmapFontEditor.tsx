@@ -24,6 +24,8 @@ import {
   serializeBitmapFontXml,
   setCommon,
   setInfo,
+  prepareBitmapFontExport,
+  shouldDefaultEnableAtlasRepack,
   utf8ToUint8,
   verifyBitmapFontXmlRoundTrip,
   zipBitmapFontFiles,
@@ -730,6 +732,9 @@ export default function ShoeboxBitmapFontEditor() {
   }, [])
 
   const [exportFileName, setExportFileName] = useState('font.xml')
+  const [repackAtlasEnabled, setRepackAtlasEnabled] = useState(false)
+  const repackTouchedRef = useRef(false)
+  const [exportNote, setExportNote] = useState<string | null>(null)
   const [showHelp, setShowHelp] = useState(false)
   const [diagnosticsOpen, setDiagnosticsOpen] = useState(true)
   const [semanticDiffOpen, setSemanticDiffOpen] = useState(false)
@@ -928,6 +933,17 @@ export default function ShoeboxBitmapFontEditor() {
     hasXmlRef.current = hasXml
   }, [hasXml])
   const ready = hasXml && previewTextureUrls.length > 0 && previewTextureUrls.every((u) => !!u)
+
+  useEffect(() => {
+    repackTouchedRef.current = false
+    setRepackAtlasEnabled(false)
+    setExportNote(null)
+  }, [activeSlotId])
+
+  useEffect(() => {
+    if (!ready || repackTouchedRef.current) return
+    setRepackAtlasEnabled(shouldDefaultEnableAtlasRepack(model))
+  }, [ready, model.common.scaleW, model.common.scaleH, model.chars])
 
   /** null = still measuring; preview only when true (atlas pixels must match &lt;common scaleW/scaleH&gt;). */
   const [atlasPixelMatchesCommon, setAtlasPixelMatchesCommon] = useState<boolean | null>(null)
@@ -2000,41 +2016,137 @@ export default function ShoeboxBitmapFontEditor() {
     }
   }, [])
 
-  const downloadXml = () => {
-    const blob = new Blob([serialized], { type: 'application/xml;charset=utf-8' })
+  const triggerDownload = useCallback((blob: Blob, filename: string) => {
     const a = document.createElement('a')
     a.href = URL.createObjectURL(blob)
-    a.download = exportFileName.replace(/^.*\//, '') || 'font.xml'
+    a.download = filename
     a.click()
     URL.revokeObjectURL(a.href)
-    setLastSavedXml(serialized)
-  }
+  }, [])
 
-  const downloadFnt = useCallback(() => {
-    const blob = new Blob([serializedFnt], { type: 'text/plain;charset=utf-8' })
-    const a = document.createElement('a')
-    a.href = URL.createObjectURL(blob)
+  const downloadXml = useCallback(async () => {
+    setExportNote(null)
+    if (repackAtlasEnabled) {
+      const prep = await prepareBitmapFontExport({
+        model,
+        repackEnabled: true,
+        pageAtlasUrls,
+        fallbackTextureUrl: texUrl,
+        exportFileName,
+        serializeOptions: { indent },
+      })
+      if (!prep.ok) {
+        setExportNote(prep.error)
+        return
+      }
+      const blob = new Blob([prep.xml], { type: 'application/xml;charset=utf-8' })
+      triggerDownload(blob, exportFileName.replace(/^.*\//, '') || 'font.xml')
+      return
+    }
+    const blob = new Blob([serialized], { type: 'application/xml;charset=utf-8' })
+    triggerDownload(blob, exportFileName.replace(/^.*\//, '') || 'font.xml')
+    setLastSavedXml(serialized)
+  }, [
+    repackAtlasEnabled,
+    model,
+    pageAtlasUrls,
+    texUrl,
+    exportFileName,
+    indent,
+    serialized,
+    triggerDownload,
+  ])
+
+  const downloadFnt = useCallback(async () => {
+    setExportNote(null)
     const raw = exportFileName.replace(/^.*\//, '')
     const stem = raw.replace(/\.(xml|fnt)$/i, '') || 'font'
-    a.download = `${stem}.fnt`
-    a.click()
-    URL.revokeObjectURL(a.href)
-  }, [exportFileName, serializedFnt])
+    if (repackAtlasEnabled) {
+      const prep = await prepareBitmapFontExport({
+        model,
+        repackEnabled: true,
+        pageAtlasUrls,
+        fallbackTextureUrl: texUrl,
+        exportFileName,
+        serializeOptions: { indent },
+      })
+      if (!prep.ok) {
+        setExportNote(prep.error)
+        return
+      }
+      const blob = new Blob([prep.fntText], { type: 'text/plain;charset=utf-8' })
+      triggerDownload(blob, `${stem}.fnt`)
+      return
+    }
+    const blob = new Blob([serializedFnt], { type: 'text/plain;charset=utf-8' })
+    triggerDownload(blob, `${stem}.fnt`)
+  }, [
+    repackAtlasEnabled,
+    model,
+    pageAtlasUrls,
+    texUrl,
+    exportFileName,
+    indent,
+    serializedFnt,
+    triggerDownload,
+  ])
 
-  const downloadFntBinary = useCallback(() => {
+  const downloadFntBinary = useCallback(async () => {
+    setExportNote(null)
+    const raw = exportFileName.replace(/^.*\//, '')
+    const stem = raw.replace(/\.(xml|fnt)$/i, '') || 'font'
+    if (repackAtlasEnabled) {
+      const prep = await prepareBitmapFontExport({
+        model,
+        repackEnabled: true,
+        pageAtlasUrls,
+        fallbackTextureUrl: texUrl,
+        exportFileName,
+        serializeOptions: { indent },
+      })
+      if (!prep.ok) {
+        setExportNote(prep.error)
+        return
+      }
+      const blob = new Blob([new Uint8Array(prep.binary)], { type: 'application/octet-stream' })
+      triggerDownload(blob, `${stem}-bmfont.fnt`)
+      return
+    }
     const bin = serializeBitmapFontBinary(model)
     const blob = new Blob([new Uint8Array(bin)], { type: 'application/octet-stream' })
-    const a = document.createElement('a')
-    a.href = URL.createObjectURL(blob)
-    const raw = exportFileName.replace(/^.*\//, '')
-    const stem = raw.replace(/\.(xml|fnt)$/i, '') || 'font'
-    a.download = `${stem}-bmfont.fnt`
-    a.click()
-    URL.revokeObjectURL(a.href)
-  }, [exportFileName, model])
+    triggerDownload(blob, `${stem}-bmfont.fnt`)
+  }, [
+    repackAtlasEnabled,
+    model,
+    pageAtlasUrls,
+    texUrl,
+    exportFileName,
+    indent,
+    triggerDownload,
+  ])
 
   const downloadZipBundle = useCallback(async () => {
+    setExportNote(null)
     const xmlName = exportFileName.replace(/^.*\//, '') || 'font.xml'
+    const stem = xmlName.replace(/\.[^.]+$/i, '') || 'font'
+    if (repackAtlasEnabled) {
+      const prep = await prepareBitmapFontExport({
+        model,
+        repackEnabled: true,
+        pageAtlasUrls,
+        fallbackTextureUrl: texUrl,
+        exportFileName,
+        serializeOptions: { indent },
+      })
+      if (!prep.ok) {
+        setExportNote(prep.error)
+        return
+      }
+      const zipped = zipBitmapFontFiles(prep.zipEntries)
+      const blob = new Blob([new Uint8Array(zipped)], { type: 'application/zip' })
+      triggerDownload(blob, `${stem}.zip`)
+      return
+    }
     const entries: { path: string; data: Uint8Array }[] = [{ path: xmlName, data: utf8ToUint8(serialized) }]
     const sorted = [...model.pages].sort((a, b) => a.id - b.id)
     for (const p of sorted) {
@@ -2051,13 +2163,17 @@ export default function ShoeboxBitmapFontEditor() {
     }
     const zipped = zipBitmapFontFiles(entries)
     const blob = new Blob([new Uint8Array(zipped)], { type: 'application/zip' })
-    const a = document.createElement('a')
-    a.href = URL.createObjectURL(blob)
-    const stem = xmlName.replace(/\.[^.]+$/i, '') || 'font'
-    a.download = `${stem}.zip`
-    a.click()
-    URL.revokeObjectURL(a.href)
-  }, [exportFileName, model.pages, pageAtlasUrls, serialized, texUrl])
+    triggerDownload(blob, `${stem}.zip`)
+  }, [
+    repackAtlasEnabled,
+    model,
+    pageAtlasUrls,
+    texUrl,
+    exportFileName,
+    indent,
+    serialized,
+    triggerDownload,
+  ])
 
   const patchCharAt = useCallback((index: number, patch: Partial<BitmapFontChar>) => {
     setModel((prev) => patchChar(prev, index, patch))
@@ -4173,6 +4289,55 @@ export default function ShoeboxBitmapFontEditor() {
                     <span style={{ marginLeft: 8, fontSize: 11, fontWeight: 600, color: '#ca8a04' }}>(unsaved edits)</span>
                   )}
                 </h2>
+                <label
+                  style={{
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: 4,
+                    fontSize: 12,
+                    color: textMuted,
+                    marginBottom: 12,
+                    cursor: ready ? 'pointer' : 'not-allowed',
+                    opacity: ready ? 1 : 0.55,
+                  }}
+                >
+                  <WithTooltip
+                    darkTheme={darkTheme}
+                    tip="Build a new square power-of-two atlas PNG and update glyph x/y in the exported descriptor. Does not change the font loaded in the editor."
+                  >
+                    <span style={{ display: 'inline-flex', alignItems: 'flex-start', gap: 8 }}>
+                      <input
+                        type="checkbox"
+                        checked={repackAtlasEnabled}
+                        disabled={!ready}
+                        onChange={(e) => {
+                          repackTouchedRef.current = true
+                          setRepackAtlasEnabled(e.target.checked)
+                          setExportNote(null)
+                        }}
+                      />
+                      <span>Repack atlas to power-of-two square PNG for PixiJS performance</span>
+                    </span>
+                  </WithTooltip>
+                  <span style={{ fontSize: 11, color: textMuted, paddingLeft: 22 }}>
+                    {ready
+                      ? 'Creates a new square power-of-two atlas and updates glyph rectangles in the descriptor.'
+                      : 'Load atlas image(s) before exporting.'}
+                  </span>
+                </label>
+                {exportNote != null && (
+                  <p
+                    role="alert"
+                    style={{
+                      margin: '0 0 12px',
+                      fontSize: 12,
+                      color: '#b91c1c',
+                      lineHeight: 1.45,
+                    }}
+                  >
+                    {exportNote}
+                  </p>
+                )}
                 <div
                   style={{
                     display: 'flex',
@@ -4183,17 +4348,43 @@ export default function ShoeboxBitmapFontEditor() {
                     minWidth: 0,
                   }}
                 >
+                  {repackAtlasEnabled && (
+                    <WithTooltip
+                      darkTheme={darkTheme}
+                      tip="ZIP with repacked square power-of-two atlas PNG(s) and updated descriptor (recommended)."
+                    >
+                      <button
+                        type="button"
+                        disabled={!ready}
+                        onClick={() => void downloadZipBundle()}
+                        style={{
+                          fontSize: 12,
+                          padding: '8px 16px',
+                          cursor: ready ? 'pointer' : 'not-allowed',
+                          opacity: ready ? 1 : 0.45,
+                          background: '#10b981',
+                          color: '#fff',
+                          border: 'none',
+                          borderRadius: 8,
+                          fontWeight: 600,
+                          flexShrink: 0,
+                        }}
+                      >
+                        Download ZIP
+                      </button>
+                    </WithTooltip>
+                  )}
                   <WithTooltip darkTheme={darkTheme} tip="Download the current font as BMFont XML to your computer.">
                     <button
                       type="button"
-                      onClick={downloadXml}
+                      onClick={() => void downloadXml()}
                       style={{
                         fontSize: 12,
                         padding: '8px 16px',
                         cursor: 'pointer',
-                        background: '#10b981',
-                        color: '#fff',
-                        border: 'none',
+                        background: repackAtlasEnabled ? (darkTheme ? '#334155' : '#e5e7eb') : '#10b981',
+                        color: repackAtlasEnabled ? text : '#fff',
+                        border: repackAtlasEnabled ? `1px solid ${inputBorder}` : 'none',
                         borderRadius: 8,
                         fontWeight: 600,
                         flexShrink: 0,
@@ -4202,31 +4393,33 @@ export default function ShoeboxBitmapFontEditor() {
                       Download XML
                     </button>
                   </WithTooltip>
-                  <WithTooltip darkTheme={darkTheme} tip="ZIP contains the exported XML plus each page image that could be read from the current session.">
-                    <button
-                      type="button"
-                      disabled={!ready}
-                      onClick={() => void downloadZipBundle()}
-                      style={{
-                        fontSize: 12,
-                        padding: '8px 16px',
-                        cursor: ready ? 'pointer' : 'not-allowed',
-                        opacity: ready ? 1 : 0.45,
-                        background: darkTheme ? '#334155' : '#e5e7eb',
-                        color: text,
-                        border: `1px solid ${inputBorder}`,
-                        borderRadius: 8,
-                        fontWeight: 600,
-                        flexShrink: 0,
-                      }}
-                    >
-                      Download ZIP
-                    </button>
-                  </WithTooltip>
+                  {!repackAtlasEnabled && (
+                    <WithTooltip darkTheme={darkTheme} tip="ZIP contains the exported XML plus each page image that could be read from the current session.">
+                      <button
+                        type="button"
+                        disabled={!ready}
+                        onClick={() => void downloadZipBundle()}
+                        style={{
+                          fontSize: 12,
+                          padding: '8px 16px',
+                          cursor: ready ? 'pointer' : 'not-allowed',
+                          opacity: ready ? 1 : 0.45,
+                          background: darkTheme ? '#334155' : '#e5e7eb',
+                          color: text,
+                          border: `1px solid ${inputBorder}`,
+                          borderRadius: 8,
+                          fontWeight: 600,
+                          flexShrink: 0,
+                        }}
+                      >
+                        Download ZIP
+                      </button>
+                    </WithTooltip>
+                  )}
                   <WithTooltip darkTheme={darkTheme} tip="BMFont ASCII (.fnt) text — same data as the XML export.">
                     <button
                       type="button"
-                      onClick={downloadFnt}
+                      onClick={() => void downloadFnt()}
                       style={{
                         fontSize: 12,
                         padding: '8px 16px',
@@ -4245,7 +4438,7 @@ export default function ShoeboxBitmapFontEditor() {
                   <WithTooltip darkTheme={darkTheme} tip="AngelCode BMFont binary format (BMF version 3). Some engines load this instead of ASCII .fnt.">
                     <button
                       type="button"
-                      onClick={downloadFntBinary}
+                      onClick={() => void downloadFntBinary()}
                       style={{
                         fontSize: 12,
                         padding: '8px 16px',
